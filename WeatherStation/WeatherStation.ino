@@ -73,6 +73,22 @@
 #define WIND_REGISTER     0x0000
 
 // ----------------------------------------------------
+// WIND AVERAGING / GUST TRACKING
+// ----------------------------------------------------
+#define WIND_SAMPLE_COUNT 30
+
+float windSamples[WIND_SAMPLE_COUNT];
+int windSampleIndex = 0;
+int windSampleFilled = 0;
+
+float windGustMS = 0;
+float windGustKPH = 0;
+float windGustMPH = 0;
+
+unsigned long lastGustReset = 0;
+const unsigned long GUST_RESET_INTERVAL = 60UL * 60UL * 1000UL; // 1 hour
+
+// ----------------------------------------------------
 // SENSOR OBJECTS
 // ----------------------------------------------------
 Adafruit_BME280 bme;
@@ -317,6 +333,55 @@ bool readWindDirection(uint16_t &raw, String &name, float &degrees) {
 }
 
 // ----------------------------------------------------
+// Wind Actions Helper
+// ----------------------------------------------------
+void addWindSample(float windMS) {
+  windSamples[windSampleIndex] = windMS;
+
+  windSampleIndex++;
+
+  if (windSampleIndex >= WIND_SAMPLE_COUNT) {
+    windSampleIndex = 0;
+  }
+
+  if (windSampleFilled < WIND_SAMPLE_COUNT) {
+    windSampleFilled++;
+  }
+
+  if (windMS > windGustMS) {
+    windGustMS = windMS;
+    windGustKPH = windMS * 3.6;
+    windGustMPH = windMS * 2.23694;
+  }
+}
+
+float getAverageWindMS() {
+  if (windSampleFilled == 0) {
+    return 0;
+  }
+
+  float total = 0;
+
+  for (int i = 0; i < windSampleFilled; i++) {
+    total += windSamples[i];
+  }
+
+  return total / windSampleFilled;
+}
+
+void resetGustIfNeeded() {
+  if (millis() - lastGustReset >= GUST_RESET_INTERVAL) {
+    lastGustReset = millis();
+
+    windGustMS = 0;
+    windGustKPH = 0;
+    windGustMPH = 0;
+
+    Serial.println("Wind gust reset.");
+  }
+}
+
+// ----------------------------------------------------
 // Setup
 // ----------------------------------------------------
 void setup() {
@@ -342,6 +407,7 @@ void setup() {
 
   Serial.println();
   Serial.println("Setup complete.");
+  lastGustReset = millis();
 }
 
 // ----------------------------------------------------
@@ -440,30 +506,51 @@ if (inaSolarOK) {
   Serial.println("Solar Charge INA219: not available");
 }
 
-  // --------------------------------------------------
-  // WIND SPEED
-  // --------------------------------------------------
-  float windMS = 0;
-  float windKPH = 0;
-  float windMPH = 0;
-  uint16_t windSpeedRaw = 0;
+// --------------------------------------------------
+// WIND SPEED + AVERAGE + GUST
+// --------------------------------------------------
+float windMS = 0;
+float windKPH = 0;
+float windMPH = 0;
+uint16_t windSpeedRaw = 0;
 
-  bool speedOK = readWindSpeed(windMS, windKPH, windMPH, windSpeedRaw);
+bool speedOK = readWindSpeed(windMS, windKPH, windMPH, windSpeedRaw);
 
-  if (speedOK) {
-    Serial.print("Wind speed:  ");
-    Serial.print(windMS, 1);
-    Serial.print(" m/s | ");
-    Serial.print(windKPH, 1);
-    Serial.print(" km/h | ");
-    Serial.print(windMPH, 1);
-    Serial.print(" mph | raw ");
-    Serial.println(windSpeedRaw);
-  } else {
-    Serial.println("Wind speed:  read failed");
-  }
+if (speedOK) {
+  addWindSample(windMS);
+  resetGustIfNeeded();
 
-  delay(150);
+  float avgWindMS = getAverageWindMS();
+  float avgWindKPH = avgWindMS * 3.6;
+  float avgWindMPH = avgWindMS * 2.23694;
+
+  Serial.print("Wind speed:  ");
+  Serial.print(windMS, 1);
+  Serial.print(" m/s | ");
+  Serial.print(windKPH, 1);
+  Serial.print(" km/h | ");
+  Serial.print(windMPH, 1);
+  Serial.print(" mph | raw ");
+  Serial.println(windSpeedRaw);
+
+  Serial.print("Wind avg:    ");
+  Serial.print(avgWindMS, 1);
+  Serial.print(" m/s | ");
+  Serial.print(avgWindKPH, 1);
+  Serial.print(" km/h | ");
+  Serial.print(avgWindMPH, 1);
+  Serial.println(" mph");
+
+  Serial.print("Wind gust:   ");
+  Serial.print(windGustMS, 1);
+  Serial.print(" m/s | ");
+  Serial.print(windGustKPH, 1);
+  Serial.print(" km/h | ");
+  Serial.print(windGustMPH, 1);
+  Serial.println(" mph");
+} else {
+  Serial.println("Wind speed:  read failed");
+}
 
   // --------------------------------------------------
   // WIND DIRECTION
