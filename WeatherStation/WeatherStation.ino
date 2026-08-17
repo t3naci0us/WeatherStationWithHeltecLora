@@ -92,8 +92,35 @@ bool latestWindDirOK = false;
 unsigned long lastSensorUpdate = 0;
 const unsigned long SENSOR_UPDATE_INTERVAL = 2000;
 
+float latestBatteryVoltage = 0;
+int latestBatteryPercent = 0;
+String latestIPAddress = "unknown";
+
+//----------------------------------------------------
+//Wifi strength globals
+//----------------------------------------------------
+int latestWiFiRSSI = 0;
+int latestWiFiPercent = 0;
+String latestWiFiQuality = "unknown";
+
 //----Power switch-----
 bool heltecPowerOn = false;
+
+// ----------------------------------------------------
+// BATTERY ADC
+// ----------------------------------------------------
+#define BATTERY_ADC_PIN 34
+
+// Your divider is 100k / 100k, so ADC voltage is half battery voltage.
+#define BATTERY_DIVIDER_RATIO 2.0
+
+// ESP32 ADC reference is not perfect, so this may need calibration later.
+#define ADC_REF_VOLTAGE 3.3
+#define ADC_MAX_READING 4095.0
+
+// 1S Li-ion rough voltage range
+#define BATTERY_FULL_VOLTAGE 4.1
+#define BATTERY_EMPTY_VOLTAGE 3.20
 
 // ----------------------------------------------------
 // I2C PINS
@@ -569,7 +596,10 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
 <body>
   <header>
     <h1>HandiWorx Weather Station</h1>
-    <div class="subtitle">ESP32 Solar Weather Node</div>
+    <div class="subtitle">
+    ESP32 Solar Weather Node<br>
+    IP: <span id="ip_address">--</span>
+</div>
   </header>
 
   <main class="grid">
@@ -585,6 +615,13 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="value"><span id="lux">--</span><span class="unit">lux</span></div>
       <div class="small">BH1750 light sensor</div>
     </div>
+    <div class="card">
+      <h2>Wi-Fi Signal</h2>
+      <div class="value"><span id="wifi_percent">--</span><span class="unit">%</span></div>
+      <div class="small">RSSI: <span id="wifi_rssi">--</span> dBm</div>
+      <div class="status">Quality: <span id="wifi_quality">--</span></div>
+    </div>
+
     <div class="card">
   <h2>MeshCore Heltec</h2>
   <div class="value"><span id="heltec_power">--</span></div>
@@ -632,6 +669,13 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="status">Battery: <span id="battery_state">--</span></div>
       <div class="small">Net current: <span id="net_current">--</span> mA</div>
     </div>
+    <div class="card">
+      <h2>Battery</h2>
+      <div class="value"><span id="battery_percent">--</span><span class="unit">%</span></div>
+      <div class="small">Voltage: <span id="battery_voltage">--</span> V</div>
+      <div class="status">State: <span id="battery_state_2">--</span></div>
+    </div>
+
   </main>
 
   <footer>
@@ -670,9 +714,22 @@ async function updateData() {
     document.getElementById('solar_current').textContent = d.solar_current.toFixed(2);
     document.getElementById('solar_power').textContent = d.solar_power.toFixed(2);
 
+    document.getElementById('ip_address').textContent = d.ip_address;
+
+    document.getElementById('wifi_percent').textContent = d.wifi_percent;
+    document.getElementById('wifi_rssi').textContent = d.wifi_rssi;
+    document.getElementById('wifi_quality').textContent = d.wifi_quality;
+
+    document.getElementById('battery_voltage').textContent = d.battery_voltage.toFixed(3);
+    document.getElementById('battery_percent').textContent = d.battery_percent;
+    document.getElementById('battery_state_2').textContent = d.battery_state;
+
     const battery = document.getElementById('battery_state');
     battery.textContent = d.battery_state;
     battery.className = d.battery_state;
+
+    document.getElementById('heltec_power').textContent =
+      d.heltec_power ? d.heltec_power.toUpperCase() : 'UNKNOWN';
 
     document.getElementById('net_current').textContent = d.net_current.toFixed(2);
 
@@ -740,8 +797,15 @@ void handleData() {
 
   json += "\"net_current\":" + String(latestNetCurrentMA, 2) + ",";
   json += "\"battery_state\":\"" + latestBatteryState + "\",";
-  json += "\"heltec_power\":\"" + String(heltecPowerOn ? "on" : "off") + "\"";
+  json += "\"battery_voltage\":" + String(latestBatteryVoltage, 3) + ",";
+  json += "\"battery_percent\":" + String(latestBatteryPercent) + ",";
+  json += "\"ip_address\":\"" + latestIPAddress + "\",";
 
+  json += "\"wifi_rssi\":" + String(latestWiFiRSSI) + ",";
+  json += "\"wifi_percent\":" + String(latestWiFiPercent) + ",";
+  json += "\"wifi_quality\":\"" + latestWiFiQuality + "\",";
+
+  json += "\"heltec_power\":\"" + String(heltecPowerOn ? "on" : "off") + "\"";
   json += "}";
 
   server.send(200, "application/json", json);
@@ -765,8 +829,10 @@ void setupWiFiAndServer() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("WiFi connected.");
+latestIPAddress = WiFi.localIP().toString();
+
     Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
+    Serial.println(latestIPAddress);
 
     if (MDNS.begin("weatherstation")) {
       Serial.println("mDNS started: http://weatherstation.local/");
@@ -777,8 +843,11 @@ void setupWiFiAndServer() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP("WeatherStation", "weather123");
 
+    latestIPAddress = WiFi.softAPIP().toString();
+
     Serial.print("Access Point IP: ");
-    Serial.println(WiFi.softAPIP());
+    Serial.println(latestIPAddress);
+
     Serial.println("Connect to WiFi: WeatherStation");
     Serial.println("Password: weather123");
   }
@@ -794,6 +863,19 @@ void setupWiFiAndServer() {
 }
 
 void updateWeatherData() {
+
+  if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
+    latestWiFiRSSI = WiFi.RSSI();
+    latestWiFiPercent = wifiPercentFromRSSI(latestWiFiRSSI);
+    latestWiFiQuality = wifiQualityFromRSSI(latestWiFiRSSI);
+  } else {
+    latestWiFiRSSI = 0;
+    latestWiFiPercent = 0;
+    latestWiFiQuality = "access point";
+  }
+
+  latestBatteryVoltage = readBatteryVoltage();
+  latestBatteryPercent = batteryPercentFromVoltage(latestBatteryVoltage);
   // BME280
   if (bmeOK) {
     latestTemperature = bme.readTemperature();
@@ -894,6 +976,47 @@ void handleHeltecOff() {
   server.send(200, "application/json", "{\"heltec_power\":\"off\"}");
 }
 
+float readBatteryVoltage() {
+  // Take a small average to reduce ADC noise
+  const int samples = 20;
+  long total = 0;
+
+  for (int i = 0; i < samples; i++) {
+    total += analogRead(BATTERY_ADC_PIN);
+    delay(2);
+  }
+
+  float raw = total / (float)samples;
+  float adcVoltage = (raw / ADC_MAX_READING) * ADC_REF_VOLTAGE;
+
+  return adcVoltage * BATTERY_DIVIDER_RATIO;
+}
+
+int batteryPercentFromVoltage(float voltage) {
+  float percent = ((voltage - BATTERY_EMPTY_VOLTAGE) /
+                   (BATTERY_FULL_VOLTAGE - BATTERY_EMPTY_VOLTAGE)) * 100.0;
+
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+
+  return (int)(percent + 0.5);
+}
+
+int wifiPercentFromRSSI(int rssi) {
+  if (rssi <= -90) return 0;
+  if (rssi >= -30) return 100;
+
+  return 2 * (rssi + 90);
+}
+
+String wifiQualityFromRSSI(int rssi) {
+  if (rssi >= -50) return "excellent";
+  if (rssi >= -60) return "good";
+  if (rssi >= -70) return "fair";
+  if (rssi >= -80) return "weak";
+  return "poor";
+}
+
 // ----------------------------------------------------
 // Setup
 // ----------------------------------------------------
@@ -917,6 +1040,9 @@ void setup() {
   setupBH1750();
   setupINA219();
   setupWindSensors();
+
+  pinMode(BATTERY_ADC_PIN, INPUT);
+  analogReadResolution(12);
 
   Serial.println();
   
@@ -1004,6 +1130,13 @@ void loop() {
     Serial.print(" | ");
     Serial.print(latestWindDirDegrees, 1);
     Serial.println(" degrees");
+
+    Serial.print("WiFi:        ");
+    Serial.print(latestWiFiRSSI);
+    Serial.print(" dBm | ");
+    Serial.print(latestWiFiPercent);
+    Serial.print(" % | ");
+    Serial.println(latestWiFiQuality);
 
     Serial.println("==================================");
   }
