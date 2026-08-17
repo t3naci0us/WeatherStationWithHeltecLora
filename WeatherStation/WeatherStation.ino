@@ -125,6 +125,25 @@ const unsigned long SENSOR_STALE_TIME = 10000; // 10 seconds
 unsigned long lastSDLog = 0;
 const unsigned long SD_LOG_INTERVAL = 60000; // 60 seconds
 
+// ----------------------------------------------------
+// WIFI FALLBACK / RECONNECT SETTINGS
+// ----------------------------------------------------
+const char* AP_SSID = "WeatherStation";
+const char* AP_PASSWORD = "REMOVED_OTA_PASSWORD123";
+
+bool fallbackAPActive = false;
+bool wifiWasConnected = false;
+
+unsigned long lastWiFiCheck = 0;
+unsigned long wifiLostAt = 0;
+unsigned long lastReconnectAttempt = 0;
+
+int wifiReconnectCount = 0;
+
+const unsigned long WIFI_CHECK_INTERVAL = 5000;       // check every 5 sec
+const unsigned long WIFI_RECONNECT_INTERVAL = 15000;  // retry every 15 sec
+const unsigned long WIFI_AP_FALLBACK_AFTER = 30000;   // AP after 30 sec offline
+
 //----Power switch-----
 bool heltecPowerOn = false;
 
@@ -658,6 +677,8 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="value"><span id="wifi_percent">--</span><span class="unit">%</span></div>
       <div class="small">RSSI: <span id="wifi_rssi">--</span> dBm</div>
       <div class="status">Quality: <span id="wifi_quality">--</span></div>
+      <div class="small">Reconnects: <span id="wifi_reconnects">--</span></div>
+      <div class="small">Fallback AP: <span id="fallback_ap">--</span></div>
     </div>
 
     <div class="card">
@@ -775,6 +796,8 @@ async function updateData() {
     document.getElementById('wifi_percent').textContent = d.wifi_percent;
     document.getElementById('wifi_rssi').textContent = d.wifi_rssi;
     document.getElementById('wifi_quality').textContent = d.wifi_quality;
+    document.getElementById('wifi_reconnects').textContent = d.wifi_reconnects;
+    document.getElementById('fallback_ap').textContent = d.fallback_ap;
 
     document.getElementById('battery_voltage').textContent = d.battery_voltage.toFixed(3);
     document.getElementById('battery_percent').textContent = d.battery_percent;
@@ -888,6 +911,8 @@ void handleData() {
   json += "\"wifi_rssi\":" + String(latestWiFiRSSI) + ",";
   json += "\"wifi_percent\":" + String(latestWiFiPercent) + ",";
   json += "\"wifi_quality\":\"" + latestWiFiQuality + "\",";
+  json += "\"wifi_reconnects\":" + String(wifiReconnectCount) + ",";
+  json += "\"fallback_ap\":\"" + String(fallbackAPActive ? "on" : "off") + "\",";
 
   json += "\"status_bme280\":\"" + sensorStatus(lastSeenBME280) + "\",";
   json += "\"status_bh1750\":\"" + sensorStatus(lastSeenBH1750) + "\",";
@@ -949,45 +974,92 @@ void handleClearLog() {
   server.send(200, "application/json", "{\"ok\":true,\"message\":\"Log cleared\"}");
 }
 
-void setupWiFiAndServer() {
-  Serial.println();
-  Serial.println("Starting WiFi...");
+void startFallbackAP() {
+  if (fallbackAPActive) {
+    return;
+  }
+
+  Serial.println("Starting fallback AP...");
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+
+  fallbackAPActive = true;
+
+  latestIPAddress = WiFi.softAPIP().toString();
+
+  Serial.print("Fallback AP started: ");
+  Serial.println(AP_SSID);
+  Serial.print("AP IP address: ");
+  Serial.println(latestIPAddress);
+}
+
+void stopFallbackAP() {
+  if (!fallbackAPActive) {
+    return;
+  }
+
+  Serial.println("Stopping fallback AP...");
+
+  WiFi.softAPdisconnect(true);
+  fallbackAPActive = false;
+
+  WiFi.mode(WIFI_STA);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    latestIPAddress = WiFi.localIP().toString();
+  }
+}
+
+void beginWiFiConnect() {
+  Serial.println("Attempting WiFi connection...");
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
+  lastReconnectAttempt = millis();
+}
+
+void setupWiFiAndServer() {
+  Serial.println();
+  Serial.println("Starting WiFi...");
+
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.mode(WIFI_STA);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
   unsigned long startAttempt = millis();
 
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
-    delay(500);
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
+    delay(250);
     Serial.print(".");
   }
 
   Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("WiFi connected.");
-latestIPAddress = WiFi.localIP().toString();
+    wifiWasConnected = true;
+    wifiLostAt = 0;
 
+    latestIPAddress = WiFi.localIP().toString();
+
+    Serial.println("WiFi connected.");
     Serial.print("IP address: ");
     Serial.println(latestIPAddress);
+
     configTime(0, 3600, "pool.ntp.org", "time.nist.gov");
+
     if (MDNS.begin("weatherstation")) {
       Serial.println("mDNS started: http://weatherstation.local/");
     }
   } else {
-    Serial.println("WiFi failed. Starting fallback access point.");
+    wifiWasConnected = false;
+    wifiLostAt = millis();
 
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("WeatherStation", "weather123");
-
-    latestIPAddress = WiFi.softAPIP().toString();
-
-    Serial.print("Access Point IP: ");
-    Serial.println(latestIPAddress);
-
-    Serial.println("Connect to WiFi: WeatherStation");
-    Serial.println("Password: weather123");
+    Serial.println("WiFi failed during startup.");
+    startFallbackAP();
   }
 
   server.on("/", handleRoot);
@@ -1375,11 +1447,77 @@ void setup() {
 
 }
 
+void maintainWiFi() {
+  if (millis() - lastWiFiCheck < WIFI_CHECK_INTERVAL) {
+    return;
+  }
+
+  lastWiFiCheck = millis();
+
+  wl_status_t status = WiFi.status();
+
+  if (status == WL_CONNECTED) {
+    latestIPAddress = WiFi.localIP().toString();
+
+    if (!wifiWasConnected) {
+      Serial.println("WiFi reconnected.");
+      Serial.print("IP address: ");
+      Serial.println(latestIPAddress);
+
+      wifiReconnectCount++;
+
+      configTime(0, 3600, "pool.ntp.org", "time.nist.gov");
+    }
+
+    wifiWasConnected = true;
+    wifiLostAt = 0;
+
+    // Optional: once router WiFi is back, turn off fallback AP.
+    if (fallbackAPActive) {
+      stopFallbackAP();
+    }
+
+    return;
+  }
+
+  // WiFi is not connected
+  if (wifiWasConnected) {
+    Serial.println("WiFi connection lost.");
+    wifiLostAt = millis();
+  }
+
+  wifiWasConnected = false;
+
+  if (wifiLostAt == 0) {
+    wifiLostAt = millis();
+  }
+
+  // Start fallback AP after being offline for a while
+  if (!fallbackAPActive && millis() - wifiLostAt >= WIFI_AP_FALLBACK_AFTER) {
+    startFallbackAP();
+  }
+
+  // Try reconnecting every so often
+  if (millis() - lastReconnectAttempt >= WIFI_RECONNECT_INTERVAL) {
+    Serial.println("Retrying WiFi connection...");
+
+    WiFi.mode(fallbackAPActive ? WIFI_AP_STA : WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    lastReconnectAttempt = millis();
+  }
+
+  if (fallbackAPActive) {
+    latestIPAddress = WiFi.softAPIP().toString();
+  }
+}
+
 // ----------------------------------------------------
 // Main loop
 // ----------------------------------------------------
 void loop() {
   server.handleClient();
+  maintainWiFi();
 
   if (millis() - lastSensorUpdate >= SENSOR_UPDATE_INTERVAL) {
     lastSensorUpdate = millis();
