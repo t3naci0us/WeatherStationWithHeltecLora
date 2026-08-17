@@ -35,6 +35,65 @@
 #include <BH1750.h>
 #include <Adafruit_INA219.h>
 #include <ModbusMaster.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+
+// ----------------------------------------------------
+// WIFI SETTINGS
+// ----------------------------------------------------
+const char* WIFI_SSID = "REMOVED_SSID";
+const char* WIFI_PASSWORD = "REMOVED_WIFI_PASSWORD";
+
+WebServer server(80);
+
+// ----------------------------------------------------
+// LATEST WEATHER DATA FOR WEB DASHBOARD
+// ----------------------------------------------------
+float latestTemperature = 0;
+float latestHumidity = 0;
+float latestPressure = 0;
+float latestLux = 0;
+
+float latestLoadVoltage = 0;
+float latestLoadCurrentMA = 0;
+float latestLoadPowerMW = 0;
+
+float latestSolarVoltage = 0;
+float latestSolarCurrentMA = 0;
+float latestSolarPowerMW = 0;
+
+float latestNetCurrentMA = 0;
+String latestBatteryState = "unknown";
+
+float latestWindMS = 0;
+float latestWindKPH = 0;
+float latestWindMPH = 0;
+
+float latestWindAvgMS = 0;
+float latestWindAvgKPH = 0;
+float latestWindAvgMPH = 0;
+
+float latestWindGustMS = 0;
+float latestWindGustKPH = 0;
+float latestWindGustMPH = 0;
+
+String latestWindDirName = "ERR";
+float latestWindDirDegrees = -1;
+uint16_t latestWindDirRaw = 0;
+
+bool latestBmeOK = false;
+bool latestBh1750OK = false;
+bool latestLoadOK = false;
+bool latestSolarOK = false;
+bool latestWindSpeedOK = false;
+bool latestWindDirOK = false;
+
+unsigned long lastSensorUpdate = 0;
+const unsigned long SENSOR_UPDATE_INTERVAL = 2000;
+
+//----Power switch-----
+bool heltecPowerOn = false;
 
 // ----------------------------------------------------
 // I2C PINS
@@ -381,6 +440,460 @@ void resetGustIfNeeded() {
   }
 }
 
+//------------------------------------
+//Embedded WebPage 
+//------------------------------------
+const char MAIN_PAGE[] PROGMEM = R"rawliteral(
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HandiWorx Weather Station</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #10131a;
+      color: #f4f7fb;
+    }
+
+    header {
+      padding: 20px;
+      text-align: center;
+      background: linear-gradient(135deg, #131722, #20283a);
+      border-bottom: 1px solid #2f3a52;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 1px;
+    }
+
+    .subtitle {
+      margin-top: 6px;
+      color: #9fb1c9;
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px;
+      padding: 14px;
+      max-width: 1200px;
+      margin: auto;
+    }
+
+    .card {
+      background: #171d2a;
+      border: 1px solid #2d374c;
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+    }
+
+    .card h2 {
+      margin: 0 0 12px 0;
+      font-size: 15px;
+      color: #8be9fd;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .value {
+      font-size: 30px;
+      font-weight: bold;
+      margin: 4px 0;
+    }
+
+    .unit {
+      font-size: 15px;
+      color: #aab7ca;
+      margin-left: 4px;
+    }
+    .btn {
+      border: none;
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin: 8px 6px 0 0;
+      font-size: 15px;
+      font-weight: bold;
+      cursor: pointer;
+      color: #10131a;
+    }
+
+    .btn.on {
+      background: #6dff9b;
+    }
+
+    .btn.off {
+      background: #ff7b7b;
+    }
+    .small {
+      font-size: 14px;
+      color: #b8c4d6;
+      line-height: 1.5;
+    }
+
+    .status {
+      margin-top: 10px;
+      padding: 8px;
+      border-radius: 8px;
+      background: #20283a;
+      color: #d5deec;
+      font-size: 14px;
+    }
+
+    .charging {
+      color: #6dff9b;
+    }
+
+    .discharging {
+      color: #ff7b7b;
+    }
+
+    .balanced {
+      color: #ffd36d;
+    }
+
+    footer {
+      text-align: center;
+      color: #6f7f98;
+      padding: 18px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>HandiWorx Weather Station</h1>
+    <div class="subtitle">ESP32 Solar Weather Node</div>
+  </header>
+
+  <main class="grid">
+    <div class="card">
+      <h2>Temperature</h2>
+      <div class="value"><span id="temperature">--</span><span class="unit">°C</span></div>
+      <div class="small">Humidity: <span id="humidity">--</span> %</div>
+      <div class="small">Pressure: <span id="pressure">--</span> hPa</div>
+    </div>
+
+    <div class="card">
+      <h2>Light</h2>
+      <div class="value"><span id="lux">--</span><span class="unit">lux</span></div>
+      <div class="small">BH1750 light sensor</div>
+    </div>
+    <div class="card">
+  <h2>MeshCore Heltec</h2>
+  <div class="value"><span id="heltec_power">--</span></div>
+  <div class="small">Remote power control on GPIO25</div>
+  <button class="btn on" onclick="setHeltecPower('on')">Power ON</button>
+  <button class="btn off" onclick="setHeltecPower('off')">Power OFF</button>
+  </div>
+    <div class="card">
+      <h2>Wind Speed</h2>
+      <div class="value"><span id="wind_mph">--</span><span class="unit">mph</span></div>
+      <div class="small"><span id="wind_ms">--</span> m/s</div>
+      <div class="small"><span id="wind_kph">--</span> km/h</div>
+    </div>
+
+    <div class="card">
+      <h2>Wind Direction</h2>
+      <div class="value"><span id="wind_dir">--</span></div>
+      <div class="small"><span id="wind_deg">--</span> degrees</div>
+    </div>
+
+    <div class="card">
+      <h2>Wind Average</h2>
+      <div class="value"><span id="wind_avg_mph">--</span><span class="unit">mph</span></div>
+      <div class="small"><span id="wind_avg_ms">--</span> m/s</div>
+    </div>
+
+    <div class="card">
+      <h2>Wind Gust</h2>
+      <div class="value"><span id="wind_gust_mph">--</span><span class="unit">mph</span></div>
+      <div class="small"><span id="wind_gust_ms">--</span> m/s</div>
+    </div>
+
+    <div class="card">
+      <h2>Station Load</h2>
+      <div class="small">Voltage: <span id="load_voltage">--</span> V</div>
+      <div class="small">Current: <span id="load_current">--</span> mA</div>
+      <div class="small">Power: <span id="load_power">--</span> mW</div>
+    </div>
+
+    <div class="card">
+      <h2>Solar Charge</h2>
+      <div class="small">Voltage: <span id="solar_voltage">--</span> V</div>
+      <div class="small">Current: <span id="solar_current">--</span> mA</div>
+      <div class="small">Power: <span id="solar_power">--</span> mW</div>
+      <div class="status">Battery: <span id="battery_state">--</span></div>
+      <div class="small">Net current: <span id="net_current">--</span> mA</div>
+    </div>
+  </main>
+
+  <footer>
+    Last update: <span id="last_update">--</span>
+  </footer>
+
+<script>
+async function updateData() {
+  try {
+    const res = await fetch('/data');
+    const d = await res.json();
+
+    document.getElementById('temperature').textContent = d.temperature.toFixed(1);
+    document.getElementById('humidity').textContent = d.humidity.toFixed(1);
+    document.getElementById('pressure').textContent = d.pressure.toFixed(1);
+    document.getElementById('lux').textContent = d.lux.toFixed(1);
+
+    document.getElementById('wind_ms').textContent = d.wind_ms.toFixed(1);
+    document.getElementById('wind_kph').textContent = d.wind_kph.toFixed(1);
+    document.getElementById('wind_mph').textContent = d.wind_mph.toFixed(1);
+
+    document.getElementById('wind_dir').textContent = d.wind_dir;
+    document.getElementById('wind_deg').textContent = d.wind_deg.toFixed(1);
+
+    document.getElementById('wind_avg_ms').textContent = d.wind_avg_ms.toFixed(1);
+    document.getElementById('wind_avg_mph').textContent = d.wind_avg_mph.toFixed(1);
+
+    document.getElementById('wind_gust_ms').textContent = d.wind_gust_ms.toFixed(1);
+    document.getElementById('wind_gust_mph').textContent = d.wind_gust_mph.toFixed(1);
+
+    document.getElementById('load_voltage').textContent = d.load_voltage.toFixed(3);
+    document.getElementById('load_current').textContent = d.load_current.toFixed(2);
+    document.getElementById('load_power').textContent = d.load_power.toFixed(2);
+
+    document.getElementById('solar_voltage').textContent = d.solar_voltage.toFixed(3);
+    document.getElementById('solar_current').textContent = d.solar_current.toFixed(2);
+    document.getElementById('solar_power').textContent = d.solar_power.toFixed(2);
+
+    const battery = document.getElementById('battery_state');
+    battery.textContent = d.battery_state;
+    battery.className = d.battery_state;
+
+    document.getElementById('net_current').textContent = d.net_current.toFixed(2);
+
+    document.getElementById('last_update').textContent = new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('last_update').textContent = 'connection error';
+  }
+}
+async function setHeltecPower(state) {
+  try {
+    await fetch('/heltec/' + state);
+    updateData();
+  } catch (e) {
+    alert('Failed to change Heltec power');
+  }
+}
+updateData();
+setInterval(updateData, 2000);
+</script>
+</body>
+</html>
+)rawliteral";
+//---------------------
+//--END WEBPAGE CONTENT
+//---------------------
+
+
+//---------------------------------------
+//Web Server Functions
+//---------------------------------------
+void handleRoot() {
+  server.send_P(200, "text/html", MAIN_PAGE);
+}
+
+void handleData() {
+  String json = "{";
+
+  json += "\"temperature\":" + String(latestTemperature, 2) + ",";
+  json += "\"humidity\":" + String(latestHumidity, 2) + ",";
+  json += "\"pressure\":" + String(latestPressure, 2) + ",";
+  json += "\"lux\":" + String(latestLux, 2) + ",";
+
+  json += "\"wind_ms\":" + String(latestWindMS, 2) + ",";
+  json += "\"wind_kph\":" + String(latestWindKPH, 2) + ",";
+  json += "\"wind_mph\":" + String(latestWindMPH, 2) + ",";
+
+  json += "\"wind_avg_ms\":" + String(latestWindAvgMS, 2) + ",";
+  json += "\"wind_avg_kph\":" + String(latestWindAvgKPH, 2) + ",";
+  json += "\"wind_avg_mph\":" + String(latestWindAvgMPH, 2) + ",";
+
+  json += "\"wind_gust_ms\":" + String(latestWindGustMS, 2) + ",";
+  json += "\"wind_gust_kph\":" + String(latestWindGustKPH, 2) + ",";
+  json += "\"wind_gust_mph\":" + String(latestWindGustMPH, 2) + ",";
+
+  json += "\"wind_dir\":\"" + latestWindDirName + "\",";
+  json += "\"wind_deg\":" + String(latestWindDirDegrees, 2) + ",";
+
+  json += "\"load_voltage\":" + String(latestLoadVoltage, 3) + ",";
+  json += "\"load_current\":" + String(latestLoadCurrentMA, 2) + ",";
+  json += "\"load_power\":" + String(latestLoadPowerMW, 2) + ",";
+
+  json += "\"solar_voltage\":" + String(latestSolarVoltage, 3) + ",";
+  json += "\"solar_current\":" + String(latestSolarCurrentMA, 2) + ",";
+  json += "\"solar_power\":" + String(latestSolarPowerMW, 2) + ",";
+
+  json += "\"net_current\":" + String(latestNetCurrentMA, 2) + ",";
+  json += "\"battery_state\":\"" + latestBatteryState + "\",";
+  json += "\"heltec_power\":\"" + String(heltecPowerOn ? "on" : "off") + "\"";
+
+  json += "}";
+
+  server.send(200, "application/json", json);
+}
+
+void setupWiFiAndServer() {
+  Serial.println();
+  Serial.println("Starting WiFi...");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  unsigned long startAttempt = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi connected.");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+
+    if (MDNS.begin("weatherstation")) {
+      Serial.println("mDNS started: http://weatherstation.local/");
+    }
+  } else {
+    Serial.println("WiFi failed. Starting fallback access point.");
+
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("WeatherStation", "weather123");
+
+    Serial.print("Access Point IP: ");
+    Serial.println(WiFi.softAPIP());
+    Serial.println("Connect to WiFi: WeatherStation");
+    Serial.println("Password: weather123");
+  }
+
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+
+  server.on("/heltec/on", handleHeltecOn);
+  server.on("/heltec/off", handleHeltecOff);
+
+  server.begin();
+  Serial.println("Web server started.");
+}
+
+void updateWeatherData() {
+  // BME280
+  if (bmeOK) {
+    latestTemperature = bme.readTemperature();
+    latestHumidity = bme.readHumidity();
+    latestPressure = bme.readPressure() / 100.0F;
+    latestBmeOK = true;
+  } else {
+    latestBmeOK = false;
+  }
+
+  // BH1750
+  if (bh1750OK) {
+    latestLux = lightMeter.readLightLevel();
+    latestBh1750OK = true;
+  } else {
+    latestBh1750OK = false;
+  }
+
+  // INA219 load
+  if (inaLoadOK) {
+    latestLoadVoltage = inaLoad.getBusVoltage_V();
+    latestLoadCurrentMA = inaLoad.getCurrent_mA();
+    latestLoadPowerMW = inaLoad.getPower_mW();
+    latestLoadOK = true;
+  } else {
+    latestLoadOK = false;
+  }
+
+  // INA219 solar
+  if (inaSolarOK) {
+    latestSolarVoltage = inaSolar.getBusVoltage_V();
+    latestSolarCurrentMA = inaSolar.getCurrent_mA();
+    latestSolarPowerMW = inaSolar.getPower_mW();
+    latestSolarOK = true;
+  } else {
+    latestSolarOK = false;
+  }
+
+  // Net battery current
+  if (latestLoadOK && latestSolarOK) {
+    latestNetCurrentMA = latestSolarCurrentMA - latestLoadCurrentMA;
+
+    if (latestNetCurrentMA > 10) {
+      latestBatteryState = "charging";
+    } else if (latestNetCurrentMA < -10) {
+      latestBatteryState = "discharging";
+    } else {
+      latestBatteryState = "balanced";
+    }
+  } else {
+    latestNetCurrentMA = 0;
+    latestBatteryState = "unknown";
+  }
+
+  // Wind speed
+  uint16_t windSpeedRaw = 0;
+
+  latestWindSpeedOK = readWindSpeed(
+    latestWindMS,
+    latestWindKPH,
+    latestWindMPH,
+    windSpeedRaw
+  );
+
+  if (latestWindSpeedOK) {
+    addWindSample(latestWindMS);
+    resetGustIfNeeded();
+
+    latestWindAvgMS = getAverageWindMS();
+    latestWindAvgKPH = latestWindAvgMS * 3.6;
+    latestWindAvgMPH = latestWindAvgMS * 2.23694;
+
+    latestWindGustMS = windGustMS;
+    latestWindGustKPH = windGustKPH;
+    latestWindGustMPH = windGustMPH;
+  }
+
+  delay(100);
+
+  // Wind direction
+  latestWindDirOK = readWindDirection(
+    latestWindDirRaw,
+    latestWindDirName,
+    latestWindDirDegrees
+  );
+}
+
+//------Web Handlers ---------------
+void handleHeltecOn() {
+  heltecPowerOn = true;
+  digitalWrite(HELTEC_POWER_PIN, HIGH);
+  server.send(200, "application/json", "{\"heltec_power\":\"on\"}");
+}
+
+void handleHeltecOff() {
+  heltecPowerOn = false;
+  digitalWrite(HELTEC_POWER_PIN, LOW);
+  server.send(200, "application/json", "{\"heltec_power\":\"off\"}");
+}
+
 // ----------------------------------------------------
 // Setup
 // ----------------------------------------------------
@@ -406,193 +919,92 @@ void setup() {
   setupWindSensors();
 
   Serial.println();
+  
+  setupWiFiAndServer();
+  updateWeatherData();
   Serial.println("Setup complete.");
   lastGustReset = millis();
+
 }
 
 // ----------------------------------------------------
 // Main loop
 // ----------------------------------------------------
 void loop() {
-  Serial.println();
-  Serial.println("========== WEATHER DATA ==========");
+  server.handleClient();
 
-  // --------------------------------------------------
-  // BME280
-  // --------------------------------------------------
-  if (bmeOK) {
-    float temperature = bme.readTemperature();
-    float humidity = bme.readHumidity();
-    float pressureHPa = bme.readPressure() / 100.0F;
+  if (millis() - lastSensorUpdate >= SENSOR_UPDATE_INTERVAL) {
+    lastSensorUpdate = millis();
+
+    updateWeatherData();
+
+    Serial.println();
+    Serial.println("========== WEATHER DATA ==========");
 
     Serial.print("Temperature: ");
-    Serial.print(temperature, 1);
+    Serial.print(latestTemperature, 1);
     Serial.println(" C");
 
     Serial.print("Humidity:    ");
-    Serial.print(humidity, 1);
+    Serial.print(latestHumidity, 1);
     Serial.println(" %");
 
     Serial.print("Pressure:    ");
-    Serial.print(pressureHPa, 1);
+    Serial.print(latestPressure, 1);
     Serial.println(" hPa");
-  } else {
-    Serial.println("BME280:      not available");
-  }
-
-  // --------------------------------------------------
-  // BH1750
-  // --------------------------------------------------
-  if (bh1750OK) {
-    float lux = lightMeter.readLightLevel();
 
     Serial.print("Light:       ");
-    Serial.print(lux, 1);
+    Serial.print(latestLux, 1);
     Serial.println(" lux");
-  } else {
-    Serial.println("BH1750:      not available");
-  }
 
-float loadCurrentMA = 0;
-float solarCurrentMA = 0;
+    Serial.print("Load:        ");
+    Serial.print(latestLoadVoltage, 3);
+    Serial.print(" V | ");
+    Serial.print(latestLoadCurrentMA, 2);
+    Serial.print(" mA | ");
+    Serial.print(latestLoadPowerMW, 2);
+    Serial.println(" mW");
 
-bool loadCurrentValid = false;
-bool solarCurrentValid = false;
+    Serial.print("Solar:       ");
+    Serial.print(latestSolarVoltage, 3);
+    Serial.print(" V | ");
+    Serial.print(latestSolarCurrentMA, 2);
+    Serial.print(" mA | ");
+    Serial.print(latestSolarPowerMW, 2);
+    Serial.println(" mW");
 
-// --------------------------------------------------
-// INA219 #1
-// --------------------------------------------------
-if (inaLoadOK) {
-  float loadVoltage = inaLoad.getBusVoltage_V();
-  loadCurrentMA = inaLoad.getCurrent_mA();
-  loadCurrentValid = true;
-  float loadPowerMW = inaLoad.getPower_mW();
+    Serial.print("Battery:     ");
+    Serial.print(latestBatteryState);
+    Serial.print(" | net ");
+    Serial.print(latestNetCurrentMA, 2);
+    Serial.println(" mA");
 
-  Serial.println("Station Load:");
-  Serial.print("  Voltage: ");
-  Serial.print(loadVoltage, 3);
-  Serial.println(" V");
+    Serial.print("Wind speed:  ");
+    Serial.print(latestWindMS, 1);
+    Serial.print(" m/s | ");
+    Serial.print(latestWindKPH, 1);
+    Serial.print(" km/h | ");
+    Serial.print(latestWindMPH, 1);
+    Serial.println(" mph");
 
-  Serial.print("  Current: ");
-  Serial.print(loadCurrentMA, 2);
-  Serial.println(" mA");
+    Serial.print("Wind avg:    ");
+    Serial.print(latestWindAvgMS, 1);
+    Serial.print(" m/s | ");
+    Serial.print(latestWindAvgMPH, 1);
+    Serial.println(" mph");
 
-  Serial.print("  Power:   ");
-  Serial.print(loadPowerMW, 2);
-  Serial.println(" mW");
-} else {
-  Serial.println("Station Load INA219: not available");
-}
+    Serial.print("Wind gust:   ");
+    Serial.print(latestWindGustMS, 1);
+    Serial.print(" m/s | ");
+    Serial.print(latestWindGustMPH, 1);
+    Serial.println(" mph");
 
-if (inaSolarOK) {
-  float solarVoltage = inaSolar.getBusVoltage_V();
-  solarCurrentMA = inaSolar.getCurrent_mA();
-  solarCurrentValid = true;
-  float solarPowerMW = inaSolar.getPower_mW();
-
-  Serial.println("Solar Charge:");
-  Serial.print("  Voltage: ");
-  Serial.print(solarVoltage, 3);
-  Serial.println(" V");
-
-  Serial.print("  Current: ");
-  Serial.print(solarCurrentMA, 2);
-  Serial.println(" mA");
-
-  Serial.print("  Power:   ");
-  Serial.print(solarPowerMW, 2);
-  Serial.println(" mW");
-} else {
-  Serial.println("Solar Charge INA219: not available");
-}
-
-// --------------------------------------------------
-// WIND SPEED + AVERAGE + GUST
-// --------------------------------------------------
-float windMS = 0;
-float windKPH = 0;
-float windMPH = 0;
-uint16_t windSpeedRaw = 0;
-
-bool speedOK = readWindSpeed(windMS, windKPH, windMPH, windSpeedRaw);
-
-if (speedOK) {
-  addWindSample(windMS);
-  resetGustIfNeeded();
-
-  float avgWindMS = getAverageWindMS();
-  float avgWindKPH = avgWindMS * 3.6;
-  float avgWindMPH = avgWindMS * 2.23694;
-
-  Serial.print("Wind speed:  ");
-  Serial.print(windMS, 1);
-  Serial.print(" m/s | ");
-  Serial.print(windKPH, 1);
-  Serial.print(" km/h | ");
-  Serial.print(windMPH, 1);
-  Serial.print(" mph | raw ");
-  Serial.println(windSpeedRaw);
-
-  Serial.print("Wind avg:    ");
-  Serial.print(avgWindMS, 1);
-  Serial.print(" m/s | ");
-  Serial.print(avgWindKPH, 1);
-  Serial.print(" km/h | ");
-  Serial.print(avgWindMPH, 1);
-  Serial.println(" mph");
-
-  Serial.print("Wind gust:   ");
-  Serial.print(windGustMS, 1);
-  Serial.print(" m/s | ");
-  Serial.print(windGustKPH, 1);
-  Serial.print(" km/h | ");
-  Serial.print(windGustMPH, 1);
-  Serial.println(" mph");
-} else {
-  Serial.println("Wind speed:  read failed");
-}
-
-  // --------------------------------------------------
-  // WIND DIRECTION
-  // --------------------------------------------------
-  uint16_t windDirRaw = 0;
-  String windDirName = "ERR";
-  float windDirDegrees = -1;
-
-  bool directionOK = readWindDirection(windDirRaw, windDirName, windDirDegrees);
-
-  if (directionOK) {
     Serial.print("Direction:   ");
-    Serial.print(windDirName);
+    Serial.print(latestWindDirName);
     Serial.print(" | ");
-    Serial.print(windDirDegrees, 1);
-    Serial.print(" degrees | raw ");
-    Serial.println(windDirRaw);
-  } else {
-    Serial.println("Direction:   read failed");
+    Serial.print(latestWindDirDegrees, 1);
+    Serial.println(" degrees");
+
+    Serial.println("==================================");
   }
-// ----------------------------------------------------
-// Show Battery Balance
-// ----------------------------------------------------
-if (loadCurrentValid && solarCurrentValid) {
-  float netCurrentMA = solarCurrentMA - loadCurrentMA;
-
-  Serial.print("Net battery current: ");
-  Serial.print(netCurrentMA, 2);
-  Serial.println(" mA");
-
-  if (netCurrentMA > 10) {
-    Serial.println("Battery state: charging");
-  } else if (netCurrentMA < -10) {
-    Serial.println("Battery state: discharging");
-  } else {
-    Serial.println("Battery state: balanced");
-  }
-} else {
-  Serial.println("Net battery current: unavailable");
-}
-
-  Serial.println("==================================");
-
-  delay(2000);
 }
