@@ -38,6 +38,9 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <SPI.h>
+#include <SD.h>
+#include <time.h>
 
 // ----------------------------------------------------
 // WIFI SETTINGS
@@ -103,8 +106,37 @@ int latestWiFiRSSI = 0;
 int latestWiFiPercent = 0;
 String latestWiFiQuality = "unknown";
 
+// ----------------------------------------------------
+// SENSOR LAST-SEEN STATUS
+// ----------------------------------------------------
+unsigned long lastSeenBME280 = 0;
+unsigned long lastSeenBH1750 = 0;
+unsigned long lastSeenINALoad = 0;
+unsigned long lastSeenINASolar = 0;
+unsigned long lastSeenWindSpeed = 0;
+unsigned long lastSeenWindDirection = 0;
+unsigned long lastSeenSD = 0;
+
+const unsigned long SENSOR_STALE_TIME = 10000; // 10 seconds
+
+// ----------------------------------------------------
+// SD LOGGING
+// ----------------------------------------------------
+unsigned long lastSDLog = 0;
+const unsigned long SD_LOG_INTERVAL = 60000; // 60 seconds
+
 //----Power switch-----
 bool heltecPowerOn = false;
+
+// ----------------------------------------------------
+// SD CARD
+// ----------------------------------------------------
+#define SD_CS   5
+#define SD_MOSI 23
+#define SD_MISO 19
+#define SD_SCK  18
+
+bool sdOK = false;
 
 // ----------------------------------------------------
 // BATTERY ADC
@@ -555,6 +587,12 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       background: #6dff9b;
     }
 
+    .btn.link {
+      display: inline-block;
+      text-decoration: none;
+      background: #8be9fd;
+    }
+
     .btn.off {
       background: #ff7b7b;
     }
@@ -676,6 +714,24 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="status">State: <span id="battery_state_2">--</span></div>
     </div>
 
+    <div class="card">
+      <h2>SD Log</h2>
+      <div class="small">Download or clear the weather CSV log.</div>
+      <a class="btn link" href="/download-log">Download CSV</a>
+      <button class="btn off" onclick="clearLog()">Clear Log</button>
+      <div class="status">Log status: <span id="log_action_status">ready</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Sensor Status</h2>
+      <div class="small">BME280: <span id="status_bme280">--</span></div>
+      <div class="small">BH1750: <span id="status_bh1750">--</span></div>
+      <div class="small">Load INA219: <span id="status_ina_load">--</span></div>
+      <div class="small">Solar INA219: <span id="status_ina_solar">--</span></div>
+      <div class="small">Wind Speed: <span id="status_wind_speed">--</span></div>
+      <div class="small">Wind Direction: <span id="status_wind_dir">--</span></div>
+      <div class="small">SD Logging: <span id="status_sd">--</span></div>
+    </div>
   </main>
 
   <footer>
@@ -724,6 +780,14 @@ async function updateData() {
     document.getElementById('battery_percent').textContent = d.battery_percent;
     document.getElementById('battery_state_2').textContent = d.battery_state;
 
+    document.getElementById('status_bme280').textContent = d.status_bme280;
+    document.getElementById('status_bh1750').textContent = d.status_bh1750;
+    document.getElementById('status_ina_load').textContent = d.status_ina_load;
+    document.getElementById('status_ina_solar').textContent = d.status_ina_solar;
+    document.getElementById('status_wind_speed').textContent = d.status_wind_speed;
+    document.getElementById('status_wind_dir').textContent = d.status_wind_dir;
+    document.getElementById('status_sd').textContent = d.status_sd;
+
     const battery = document.getElementById('battery_state');
     battery.textContent = d.battery_state;
     battery.className = d.battery_state;
@@ -738,12 +802,32 @@ async function updateData() {
     document.getElementById('last_update').textContent = 'connection error';
   }
 }
+
 async function setHeltecPower(state) {
   try {
     await fetch('/heltec/' + state);
     updateData();
   } catch (e) {
     alert('Failed to change Heltec power');
+  }
+}
+async function clearLog() {
+  const sure = confirm('Clear the weather log? This cannot be undone.');
+
+  if (!sure) {
+    return;
+  }
+
+  try {
+    const res = await fetch('/clear-log');
+    const d = await res.json();
+
+    document.getElementById('log_action_status').textContent =
+      d.ok ? 'log cleared' : d.message;
+
+    updateData();
+  } catch (e) {
+    document.getElementById('log_action_status').textContent = 'clear failed';
   }
 }
 updateData();
@@ -805,10 +889,64 @@ void handleData() {
   json += "\"wifi_percent\":" + String(latestWiFiPercent) + ",";
   json += "\"wifi_quality\":\"" + latestWiFiQuality + "\",";
 
+  json += "\"status_bme280\":\"" + sensorStatus(lastSeenBME280) + "\",";
+  json += "\"status_bh1750\":\"" + sensorStatus(lastSeenBH1750) + "\",";
+  json += "\"status_ina_load\":\"" + sensorStatus(lastSeenINALoad) + "\",";
+  json += "\"status_ina_solar\":\"" + sensorStatus(lastSeenINASolar) + "\",";
+  json += "\"status_wind_speed\":\"" + sensorStatus(lastSeenWindSpeed) + "\",";
+  json += "\"status_wind_dir\":\"" + sensorStatus(lastSeenWindDirection) + "\",";
+  json += "\"status_sd\":\"" + String(sdOK ? sensorStatus(lastSeenSD) : "offline") + "\",";
+
   json += "\"heltec_power\":\"" + String(heltecPowerOn ? "on" : "off") + "\"";
   json += "}";
 
   server.send(200, "application/json", json);
+}
+
+void handleDownloadLog() {
+  if (!sdOK || !SD.exists("/weather.csv")) {
+    server.send(404, "text/plain", "weather.csv not found");
+    return;
+  }
+
+  File file = SD.open("/weather.csv", FILE_READ);
+
+  if (!file) {
+    server.send(500, "text/plain", "Could not open weather.csv");
+    return;
+  }
+
+  server.sendHeader("Content-Type", "text/csv");
+  server.sendHeader("Content-Disposition", "attachment; filename=weather.csv");
+  server.sendHeader("Connection", "close");
+
+  server.streamFile(file, "text/csv");
+  file.close();
+}
+
+void handleClearLog() {
+  if (!sdOK) {
+    server.send(500, "application/json", "{\"ok\":false,\"message\":\"SD card not available\"}");
+    return;
+  }
+
+  if (SD.exists("/weather.csv")) {
+    SD.remove("/weather.csv");
+  }
+
+  File file = SD.open("/weather.csv", FILE_WRITE);
+
+  if (!file) {
+    server.send(500, "application/json", "{\"ok\":false,\"message\":\"Could not recreate weather.csv\"}");
+    return;
+  }
+
+  writeCSVHeader(file);
+  file.close();
+
+  lastSeenSD = millis();
+
+  server.send(200, "application/json", "{\"ok\":true,\"message\":\"Log cleared\"}");
 }
 
 void setupWiFiAndServer() {
@@ -833,7 +971,7 @@ latestIPAddress = WiFi.localIP().toString();
 
     Serial.print("IP address: ");
     Serial.println(latestIPAddress);
-
+    configTime(0, 3600, "pool.ntp.org", "time.nist.gov");
     if (MDNS.begin("weatherstation")) {
       Serial.println("mDNS started: http://weatherstation.local/");
     }
@@ -857,6 +995,9 @@ latestIPAddress = WiFi.localIP().toString();
 
   server.on("/heltec/on", handleHeltecOn);
   server.on("/heltec/off", handleHeltecOff);
+
+  server.on("/download-log", handleDownloadLog);
+  server.on("/clear-log", handleClearLog);
 
   server.begin();
   Serial.println("Web server started.");
@@ -882,6 +1023,7 @@ void updateWeatherData() {
     latestHumidity = bme.readHumidity();
     latestPressure = bme.readPressure() / 100.0F;
     latestBmeOK = true;
+    lastSeenBME280 = millis();
   } else {
     latestBmeOK = false;
   }
@@ -890,6 +1032,7 @@ void updateWeatherData() {
   if (bh1750OK) {
     latestLux = lightMeter.readLightLevel();
     latestBh1750OK = true;
+    lastSeenBH1750 = millis();
   } else {
     latestBh1750OK = false;
   }
@@ -900,6 +1043,7 @@ void updateWeatherData() {
     latestLoadCurrentMA = inaLoad.getCurrent_mA();
     latestLoadPowerMW = inaLoad.getPower_mW();
     latestLoadOK = true;
+    lastSeenINALoad = millis();
   } else {
     latestLoadOK = false;
   }
@@ -910,6 +1054,7 @@ void updateWeatherData() {
     latestSolarCurrentMA = inaSolar.getCurrent_mA();
     latestSolarPowerMW = inaSolar.getPower_mW();
     latestSolarOK = true;
+    lastSeenINASolar = millis();
   } else {
     latestSolarOK = false;
   }
@@ -941,6 +1086,7 @@ void updateWeatherData() {
   );
 
   if (latestWindSpeedOK) {
+    lastSeenWindSpeed = millis();
     addWindSample(latestWindMS);
     resetGustIfNeeded();
 
@@ -961,6 +1107,9 @@ void updateWeatherData() {
     latestWindDirName,
     latestWindDirDegrees
   );
+  if (latestWindDirOK) {
+  lastSeenWindDirection = millis();
+}
 }
 
 //------Web Handlers ---------------
@@ -1017,6 +1166,179 @@ String wifiQualityFromRSSI(int rssi) {
   return "poor";
 }
 
+String sensorStatus(unsigned long lastSeen) {
+  if (lastSeen == 0) {
+    return "offline";
+  }
+
+  unsigned long age = millis() - lastSeen;
+
+  if (age <= SENSOR_STALE_TIME) {
+    return "ok";
+  }
+
+  return "stale";
+}
+
+unsigned long sensorAgeSeconds(unsigned long lastSeen) {
+  if (lastSeen == 0) {
+    return 999999;
+  }
+
+  return (millis() - lastSeen) / 1000;
+}
+
+void writeCSVHeader(File &file) {
+  file.println(
+    "timestamp,"
+    "temperature_c,"
+    "humidity_percent,"
+    "pressure_hpa,"
+    "lux,"
+    "battery_voltage,"
+    "battery_percent,"
+    "load_voltage,"
+    "load_current_ma,"
+    "load_power_mw,"
+    "solar_voltage,"
+    "solar_current_ma,"
+    "solar_power_mw,"
+    "net_current_ma,"
+    "battery_state,"
+    "wind_ms,"
+    "wind_kph,"
+    "wind_mph,"
+    "wind_avg_ms,"
+    "wind_gust_ms,"
+    "wind_dir,"
+    "wind_degrees,"
+    "wifi_rssi,"
+    "wifi_percent,"
+    "heltec_power"
+  );
+}
+
+void setupSDCard() {
+  Serial.println();
+  Serial.println("Starting SD card...");
+
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+  if (!SD.begin(SD_CS, SPI)) {
+    sdOK = false;
+    Serial.println("SD card mount FAILED.");
+    return;
+  }
+
+  sdOK = true;
+  lastSeenSD = millis();
+
+  Serial.println("SD card mounted OK.");
+
+  if (!SD.exists("/weather.csv")) {
+    File file = SD.open("/weather.csv", FILE_WRITE);
+
+    if (file) {
+      writeCSVHeader(file);
+      file.close();
+      Serial.println("Created /weather.csv with header.");
+    } else {
+      Serial.println("Could not create /weather.csv.");
+    }
+  }
+}
+
+String getTimestamp() {
+  struct tm timeinfo;
+
+  if (getLocalTime(&timeinfo)) {
+    char buffer[25];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    return String(buffer);
+  }
+
+  return "millis_" + String(millis());
+}
+
+void logWeatherToSD() {
+  if (!sdOK) {
+    return;
+  }
+
+  File file = SD.open("/weather.csv", FILE_APPEND);
+
+  if (!file) {
+    Serial.println("SD log failed: could not open /weather.csv");
+    sdOK = false;
+    return;
+  }
+
+  file.print(getTimestamp());
+  file.print(",");
+
+  file.print(latestTemperature, 2);
+  file.print(",");
+  file.print(latestHumidity, 2);
+  file.print(",");
+  file.print(latestPressure, 2);
+  file.print(",");
+  file.print(latestLux, 2);
+  file.print(",");
+
+  file.print(latestBatteryVoltage, 3);
+  file.print(",");
+  file.print(latestBatteryPercent);
+  file.print(",");
+
+  file.print(latestLoadVoltage, 3);
+  file.print(",");
+  file.print(latestLoadCurrentMA, 2);
+  file.print(",");
+  file.print(latestLoadPowerMW, 2);
+  file.print(",");
+
+  file.print(latestSolarVoltage, 3);
+  file.print(",");
+  file.print(latestSolarCurrentMA, 2);
+  file.print(",");
+  file.print(latestSolarPowerMW, 2);
+  file.print(",");
+
+  file.print(latestNetCurrentMA, 2);
+  file.print(",");
+  file.print(latestBatteryState);
+  file.print(",");
+
+  file.print(latestWindMS, 2);
+  file.print(",");
+  file.print(latestWindKPH, 2);
+  file.print(",");
+  file.print(latestWindMPH, 2);
+  file.print(",");
+
+  file.print(latestWindAvgMS, 2);
+  file.print(",");
+  file.print(latestWindGustMS, 2);
+  file.print(",");
+
+  file.print(latestWindDirName);
+  file.print(",");
+  file.print(latestWindDirDegrees, 1);
+  file.print(",");
+
+  file.print(latestWiFiRSSI);
+  file.print(",");
+  file.print(latestWiFiPercent);
+  file.print(",");
+
+  file.println(heltecPowerOn ? "on" : "off");
+
+  file.close();
+
+  lastSeenSD = millis();
+  Serial.println("Logged weather data to SD.");
+}
+
 // ----------------------------------------------------
 // Setup
 // ----------------------------------------------------
@@ -1045,7 +1367,7 @@ void setup() {
   analogReadResolution(12);
 
   Serial.println();
-  
+  setupSDCard();
   setupWiFiAndServer();
   updateWeatherData();
   Serial.println("Setup complete.");
@@ -1063,6 +1385,11 @@ void loop() {
     lastSensorUpdate = millis();
 
     updateWeatherData();
+
+    if (millis() - lastSDLog >= SD_LOG_INTERVAL) {
+      lastSDLog = millis();
+      logWeatherToSD();
+    }
 
     Serial.println();
     Serial.println("========== WEATHER DATA ==========");
@@ -1137,6 +1464,22 @@ void loop() {
     Serial.print(latestWiFiPercent);
     Serial.print(" % | ");
     Serial.println(latestWiFiQuality);
+
+    Serial.print("Status:      ");
+    Serial.print("BME280=");
+    Serial.print(sensorStatus(lastSeenBME280));
+    Serial.print(" BH1750=");
+    Serial.print(sensorStatus(lastSeenBH1750));
+    Serial.print(" LoadINA=");
+    Serial.print(sensorStatus(lastSeenINALoad));
+    Serial.print(" SolarINA=");
+    Serial.print(sensorStatus(lastSeenINASolar));
+    Serial.print(" WindSpd=");
+    Serial.print(sensorStatus(lastSeenWindSpeed));
+    Serial.print(" WindDir=");
+    Serial.print(sensorStatus(lastSeenWindDirection));
+    Serial.print(" SD=");
+    Serial.println(sdOK ? sensorStatus(lastSeenSD) : "offline");
 
     Serial.println("==================================");
   }
