@@ -147,6 +147,14 @@ const unsigned long WIFI_AP_FALLBACK_AFTER = 30000;   // AP after 30 sec offline
 //----Power switch-----
 bool heltecPowerOn = false;
 
+//-----------------------------------------------------
+//System Health Globals
+//-----------------------------------------------------
+String latestUptime = "0s";
+uint32_t latestFreeHeap = 0;
+String latestResetReason = "";
+String latestWiFiMode = "unknown";
+
 // ----------------------------------------------------
 // SD CARD
 // ----------------------------------------------------
@@ -753,6 +761,14 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="small">Wind Direction: <span id="status_wind_dir">--</span></div>
       <div class="small">SD Logging: <span id="status_sd">--</span></div>
     </div>
+    <div class="card">
+      <h2>System Health</h2>
+      <div class="small">Uptime: <span id="uptime">--</span></div>
+      <div class="small">Free heap: <span id="free_heap">--</span> bytes</div>
+      <div class="small">Reset reason: <span id="reset_reason">--</span></div>
+      <div class="small">Wi-Fi mode: <span id="wifi_mode">--</span></div>
+    </div>
+
   </main>
 
   <footer>
@@ -810,6 +826,11 @@ async function updateData() {
     document.getElementById('status_wind_speed').textContent = d.status_wind_speed;
     document.getElementById('status_wind_dir').textContent = d.status_wind_dir;
     document.getElementById('status_sd').textContent = d.status_sd;
+
+    document.getElementById('uptime').textContent = d.uptime;
+    document.getElementById('free_heap').textContent = d.free_heap;
+    document.getElementById('reset_reason').textContent = d.reset_reason;
+    document.getElementById('wifi_mode').textContent = d.wifi_mode;
 
     const battery = document.getElementById('battery_state');
     battery.textContent = d.battery_state;
@@ -921,6 +942,11 @@ void handleData() {
   json += "\"status_wind_speed\":\"" + sensorStatus(lastSeenWindSpeed) + "\",";
   json += "\"status_wind_dir\":\"" + sensorStatus(lastSeenWindDirection) + "\",";
   json += "\"status_sd\":\"" + String(sdOK ? sensorStatus(lastSeenSD) : "offline") + "\",";
+
+  json += "\"uptime\":\"" + latestUptime + "\",";
+  json += "\"free_heap\":" + String(latestFreeHeap) + ",";
+  json += "\"reset_reason\":\"" + latestResetReason + "\",";
+  json += "\"wifi_mode\":\"" + latestWiFiMode + "\",";
 
   json += "\"heltec_power\":\"" + String(heltecPowerOn ? "on" : "off") + "\"";
   json += "}";
@@ -1076,7 +1102,18 @@ void setupWiFiAndServer() {
 }
 
 void updateWeatherData() {
+  latestUptime = formatUptime(millis());
+  latestFreeHeap = ESP.getFreeHeap();
 
+  if (fallbackAPActive && WiFi.status() == WL_CONNECTED) {
+    latestWiFiMode = "STA + AP";
+  } else if (fallbackAPActive) {
+    latestWiFiMode = "AP";
+  } else if (WiFi.status() == WL_CONNECTED) {
+    latestWiFiMode = "STA";
+  } else {
+    latestWiFiMode = "offline";
+  }
   if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
     latestWiFiRSSI = WiFi.RSSI();
     latestWiFiPercent = wifiPercentFromRSSI(latestWiFiRSSI);
@@ -1411,13 +1448,60 @@ void logWeatherToSD() {
   Serial.println("Logged weather data to SD.");
 }
 
+String formatUptime(unsigned long ms) {
+  unsigned long seconds = ms / 1000;
+  unsigned long minutes = seconds / 60;
+  unsigned long hours = minutes / 60;
+  unsigned long days = hours / 24;
+
+  seconds %= 60;
+  minutes %= 60;
+  hours %= 24;
+
+  String out = "";
+
+  if (days > 0) {
+    out += String(days) + "d ";
+  }
+
+  if (hours > 0 || days > 0) {
+    out += String(hours) + "h ";
+  }
+
+  if (minutes > 0 || hours > 0 || days > 0) {
+    out += String(minutes) + "m ";
+  }
+
+  out += String(seconds) + "s";
+
+  return out;
+}
+
+String resetReasonText() {
+  esp_reset_reason_t reason = esp_reset_reason();
+
+  switch (reason) {
+    case ESP_RST_POWERON:  return "power on";
+    case ESP_RST_EXT:      return "external reset";
+    case ESP_RST_SW:       return "software reset";
+    case ESP_RST_PANIC:    return "panic/crash";
+    case ESP_RST_INT_WDT:  return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT:      return "watchdog";
+    case ESP_RST_DEEPSLEEP:return "deep sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO:     return "SDIO reset";
+    default:               return "unknown";
+  }
+}
+
 // ----------------------------------------------------
 // Setup
 // ----------------------------------------------------
 void setup() {
   Serial.begin(115200);
   delay(1500);
-
+  latestResetReason = resetReasonText();
   Serial.println();
   Serial.println("====================================");
   Serial.println("ESP32 Weather Station - Basic Sketch");
@@ -1618,6 +1702,13 @@ void loop() {
     Serial.print(sensorStatus(lastSeenWindDirection));
     Serial.print(" SD=");
     Serial.println(sdOK ? sensorStatus(lastSeenSD) : "offline");
+
+    Serial.print("Uptime:      ");
+    Serial.print(latestUptime);
+    Serial.print(" | Heap: ");
+    Serial.print(latestFreeHeap);
+    Serial.print(" | Reset: ");
+    Serial.println(latestResetReason);
 
     Serial.println("==================================");
   }
