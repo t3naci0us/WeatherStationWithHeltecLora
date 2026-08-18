@@ -183,6 +183,7 @@ bool sdOK = false;
 // ESP32 ADC reference is not perfect, so this may need calibration later.
 #define ADC_REF_VOLTAGE 3.3
 #define ADC_MAX_READING 4095.0
+#define BATTERY_CALIBRATION 1.093
 
 // 1S Li-ion rough voltage range
 #define BATTERY_FULL_VOLTAGE 4.1
@@ -1261,7 +1262,7 @@ float readBatteryVoltage() {
   float raw = total / (float)samples;
   float adcVoltage = (raw / ADC_MAX_READING) * ADC_REF_VOLTAGE;
 
-  return adcVoltage * BATTERY_DIVIDER_RATIO;
+  return adcVoltage * BATTERY_DIVIDER_RATIO * BATTERY_CALIBRATION;
 }
 
 int batteryPercentFromVoltage(float voltage) {
