@@ -190,6 +190,20 @@ bool sdOK = false;
 #define BATTERY_EMPTY_VOLTAGE 3.20
 
 // ----------------------------------------------------
+// LOW VOLTAGE PROTECTION
+// ----------------------------------------------------
+#define BATTERY_WARN_VOLTAGE      3.45
+#define BATTERY_HELTEC_OFF_VOLTAGE 3.35
+#define BATTERY_CRITICAL_VOLTAGE  3.20
+#define BATTERY_RECOVER_VOLTAGE   3.70
+
+bool lowVoltageLockout = false;
+bool heltecRequestedOn = false;
+
+String latestLowVoltageStatus = "normal";
+String latestHeltecProtection = "allowed";
+
+// ----------------------------------------------------
 // I2C PINS
 // ----------------------------------------------------
 #define I2C_SDA 21
@@ -287,6 +301,11 @@ void preTransmissionDirection() {
 void postTransmissionDirection() {
   delayMicroseconds(300);
   digitalWrite(WIND_DIR_DE_RE, LOW);
+}
+
+void applyHeltecPower(bool on) {
+  heltecPowerOn = on;
+  digitalWrite(HELTEC_POWER_PIN, on ? HIGH : LOW);
 }
 
 // ----------------------------------------------------
@@ -781,6 +800,14 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="small">Hostname: <span id="ota_hostname">--</span></div>
       <div class="small">Arduino IDE network upload should show this device once connected.</div>
     </div>
+    <div class="card">
+      <h2>Low Voltage Protection</h2>
+      <div class="small">Status: <span id="low_voltage_status">--</span></div>
+      <div class="small">Lockout: <span id="low_voltage_lockout">--</span></div>
+      <div class="small">Heltec requested: <span id="heltec_requested">--</span></div>
+      <div class="small">Protection: <span id="heltec_protection">--</span></div>
+      <div class="small">Heltec actual: <span id="heltec_power_2">--</span></div>
+    </div>
   </main>
 
   <footer>
@@ -851,6 +878,13 @@ async function updateData() {
     document.getElementById('ota_hostname').textContent = d.ota_hostname;
 
     document.getElementById('heltec_power').textContent =
+      d.heltec_power ? d.heltec_power.toUpperCase() : 'UNKNOWN';
+
+    document.getElementById('low_voltage_status').textContent = d.low_voltage_status;
+    document.getElementById('low_voltage_lockout').textContent = d.low_voltage_lockout;
+    document.getElementById('heltec_requested').textContent = d.heltec_requested;
+    document.getElementById('heltec_protection').textContent = d.heltec_protection;
+    document.getElementById('heltec_power_2').textContent =
       d.heltec_power ? d.heltec_power.toUpperCase() : 'UNKNOWN';
 
     document.getElementById('net_current').textContent = d.net_current.toFixed(2);
@@ -962,6 +996,10 @@ void handleData() {
   json += "\"reset_reason\":\"" + latestResetReason + "\",";
   json += "\"wifi_mode\":\"" + latestWiFiMode + "\",";
   json += "\"ota_hostname\":\"" + latestOTAHostname + "\",";
+  json += "\"low_voltage_status\":\"" + latestLowVoltageStatus + "\",";
+  json += "\"low_voltage_lockout\":\"" + String(lowVoltageLockout ? "on" : "off") + "\",";
+  json += "\"heltec_requested\":\"" + String(heltecRequestedOn ? "on" : "off") + "\",";
+  json += "\"heltec_protection\":\"" + latestHeltecProtection + "\",";
 
   json += "\"heltec_power\":\"" + String(heltecPowerOn ? "on" : "off") + "\"";
   json += "}";
@@ -1141,6 +1179,11 @@ void updateWeatherData() {
 
   latestBatteryVoltage = readBatteryVoltage();
   latestBatteryPercent = batteryPercentFromVoltage(latestBatteryVoltage);
+
+  latestBatteryVoltage = readBatteryVoltage();
+  latestBatteryPercent = batteryPercentFromVoltage(latestBatteryVoltage);
+  maintainLowVoltageProtection();
+
   // BME280
   if (bmeOK) {
     latestTemperature = bme.readTemperature();
@@ -1238,15 +1281,23 @@ void updateWeatherData() {
 
 //------Web Handlers ---------------
 void handleHeltecOn() {
-  heltecPowerOn = true;
-  digitalWrite(HELTEC_POWER_PIN, HIGH);
-  server.send(200, "application/json", "{\"heltec_power\":\"on\"}");
+  heltecRequestedOn = true;
+
+  if (lowVoltageLockout) {
+    applyHeltecPower(false);
+    server.send(200, "application/json", "{\"ok\":false,\"message\":\"Low voltage lockout active\",\"heltec_power\":\"off\"}");
+    return;
+  }
+
+  applyHeltecPower(true);
+  server.send(200, "application/json", "{\"ok\":true,\"heltec_power\":\"on\"}");
 }
 
 void handleHeltecOff() {
-  heltecPowerOn = false;
-  digitalWrite(HELTEC_POWER_PIN, LOW);
-  server.send(200, "application/json", "{\"heltec_power\":\"off\"}");
+  heltecRequestedOn = false;
+  applyHeltecPower(false);
+
+  server.send(200, "application/json", "{\"ok\":true,\"heltec_power\":\"off\"}");
 }
 
 float readBatteryVoltage() {
@@ -1558,6 +1609,46 @@ void setupOTA() {
   Serial.println(OTA_HOSTNAME);
 }
 
+void maintainLowVoltageProtection() {
+  if (latestBatteryVoltage <= BATTERY_CRITICAL_VOLTAGE) {
+    latestLowVoltageStatus = "critical";
+  } else if (latestBatteryVoltage <= BATTERY_HELTEC_OFF_VOLTAGE) {
+    latestLowVoltageStatus = "heltec off";
+  } else if (latestBatteryVoltage <= BATTERY_WARN_VOLTAGE) {
+    latestLowVoltageStatus = "warning";
+  } else {
+    latestLowVoltageStatus = "normal";
+  }
+
+  // Enter low-voltage lockout
+  if (!lowVoltageLockout && latestBatteryVoltage <= BATTERY_HELTEC_OFF_VOLTAGE) {
+    lowVoltageLockout = true;
+    latestHeltecProtection = "locked out";
+
+    applyHeltecPower(false);
+
+    Serial.println("LOW VOLTAGE: Heltec forced OFF.");
+  }
+
+  // Recover from low-voltage lockout
+  if (lowVoltageLockout && latestBatteryVoltage >= BATTERY_RECOVER_VOLTAGE) {
+    lowVoltageLockout = false;
+    latestHeltecProtection = "recovered";
+
+    Serial.println("Battery recovered: Heltec power allowed again.");
+
+    // If user had previously requested it on, restore it automatically.
+    if (heltecRequestedOn) {
+      applyHeltecPower(true);
+      Serial.println("Heltec restored ON after battery recovery.");
+    }
+  }
+
+  if (!lowVoltageLockout) {
+    latestHeltecProtection = "allowed";
+  }
+}
+
 // ----------------------------------------------------
 // Setup
 // ----------------------------------------------------
@@ -1571,7 +1662,9 @@ void setup() {
   Serial.println("====================================");
 
   pinMode(HELTEC_POWER_PIN, OUTPUT);
-  digitalWrite(HELTEC_POWER_PIN, HELTEC_POWER_DEFAULT);
+
+  heltecRequestedOn = false;
+  applyHeltecPower(false);
 
   Wire.begin(I2C_SDA, I2C_SCL);
 
@@ -1774,6 +1867,15 @@ void loop() {
     Serial.print(latestFreeHeap);
     Serial.print(" | Reset: ");
     Serial.println(latestResetReason);
+
+    Serial.print("LV Protect:  ");
+    Serial.print(latestLowVoltageStatus);
+    Serial.print(" | Lockout: ");
+    Serial.print(lowVoltageLockout ? "ON" : "OFF");
+    Serial.print(" | Heltec: ");
+    Serial.print(heltecPowerOn ? "ON" : "OFF");
+    Serial.print(" | Requested: ");
+    Serial.println(heltecRequestedOn ? "ON" : "OFF");
 
     Serial.println("==================================");
   }
