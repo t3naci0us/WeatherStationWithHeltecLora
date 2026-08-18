@@ -41,6 +41,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <time.h>
+#include <ArduinoOTA.h>
 
 // ----------------------------------------------------
 // WIFI SETTINGS
@@ -49,6 +50,12 @@ const char* WIFI_SSID = "REMOVED_SSID";
 const char* WIFI_PASSWORD = "REMOVED_WIFI_PASSWORD";
 
 WebServer server(80);
+String latestOTAHostname = "";
+// ----------------------------------------------------
+// OTA SETTINGS
+// ----------------------------------------------------
+const char* OTA_HOSTNAME = "weatherstation";
+const char* OTA_PASSWORD = "REMOVED_OTA_PASSWORD";
 
 // ----------------------------------------------------
 // LATEST WEATHER DATA FOR WEB DASHBOARD
@@ -768,7 +775,11 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="small">Reset reason: <span id="reset_reason">--</span></div>
       <div class="small">Wi-Fi mode: <span id="wifi_mode">--</span></div>
     </div>
-
+    <div class="card">
+      <h2>OTA Update</h2>
+      <div class="small">Hostname: <span id="ota_hostname">--</span></div>
+      <div class="small">Arduino IDE network upload should show this device once connected.</div>
+    </div>
   </main>
 
   <footer>
@@ -835,6 +846,8 @@ async function updateData() {
     const battery = document.getElementById('battery_state');
     battery.textContent = d.battery_state;
     battery.className = d.battery_state;
+
+    document.getElementById('ota_hostname').textContent = d.ota_hostname;
 
     document.getElementById('heltec_power').textContent =
       d.heltec_power ? d.heltec_power.toUpperCase() : 'UNKNOWN';
@@ -947,6 +960,7 @@ void handleData() {
   json += "\"free_heap\":" + String(latestFreeHeap) + ",";
   json += "\"reset_reason\":\"" + latestResetReason + "\",";
   json += "\"wifi_mode\":\"" + latestWiFiMode + "\",";
+  json += "\"ota_hostname\":\"" + latestOTAHostname + "\",";
 
   json += "\"heltec_power\":\"" + String(heltecPowerOn ? "on" : "off") + "\"";
   json += "}";
@@ -1495,6 +1509,54 @@ String resetReasonText() {
   }
 }
 
+void setupOTA() {
+  Serial.println();
+  Serial.println("Starting OTA...");
+
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+
+  ArduinoOTA.onStart([]() {
+    Serial.println();
+    Serial.println("OTA update started");
+
+    // Optional safety: turn off Heltec during OTA if you want to reduce load.
+    // digitalWrite(HELTEC_POWER_PIN, LOW);
+  });
+
+  ArduinoOTA.onEnd([]() {
+    Serial.println();
+    Serial.println("OTA update finished");
+  });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("OTA progress: %u%%\r", (progress * 100) / total);
+  });
+
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA error[%u]: ", error);
+
+    if (error == OTA_AUTH_ERROR) {
+      Serial.println("Auth failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Serial.println("Begin failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Serial.println("Connect failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Serial.println("Receive failed");
+    } else if (error == OTA_END_ERROR) {
+      Serial.println("End failed");
+    } else {
+      Serial.println("Unknown error");
+    }
+  });
+
+  ArduinoOTA.begin();
+  latestOTAHostname = String(OTA_HOSTNAME);
+  Serial.print("OTA ready. Hostname: ");
+  Serial.println(OTA_HOSTNAME);
+}
+
 // ----------------------------------------------------
 // Setup
 // ----------------------------------------------------
@@ -1525,6 +1587,7 @@ void setup() {
   Serial.println();
   setupSDCard();
   setupWiFiAndServer();
+  setupOTA();
   updateWeatherData();
   Serial.println("Setup complete.");
   lastGustReset = millis();
@@ -1601,6 +1664,7 @@ void maintainWiFi() {
 // ----------------------------------------------------
 void loop() {
   server.handleClient();
+  ArduinoOTA.handle();
   maintainWiFi();
 
   if (millis() - lastSensorUpdate >= SENSOR_UPDATE_INTERVAL) {
