@@ -244,6 +244,8 @@ String latestHeltecProtection = "allowed";
 // ----------------------------------------------------
 #define WIND_SAMPLE_COUNT 30
 
+
+
 float windSamples[WIND_SAMPLE_COUNT];
 int windSampleIndex = 0;
 int windSampleFilled = 0;
@@ -254,6 +256,13 @@ float windGustMPH = 0;
 
 unsigned long lastGustReset = 0;
 const unsigned long GUST_RESET_INTERVAL = 60UL * 60UL * 1000UL; // 1 hour
+
+// ----------------------------------------------------
+// REBOOT GLOBALS
+// ----------------------------------------------------
+bool rebootRequested = false;
+unsigned long rebootRequestedAt = 0;
+const unsigned long REBOOT_DELAY_MS = 2000;
 
 // ----------------------------------------------------
 // SENSOR OBJECTS
@@ -553,6 +562,15 @@ void resetGustIfNeeded() {
   }
 }
 
+void handleReboot() {
+  server.send(200, "application/json", "{\"ok\":true,\"message\":\"ESP32 rebooting\"}");
+
+  rebootRequested = true;
+  rebootRequestedAt = millis();
+
+  Serial.println("Safe reboot requested from dashboard.");
+}
+
 //------------------------------------
 //Embedded WebPage 
 //------------------------------------
@@ -654,6 +672,40 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       font-size: 14px;
       color: #b8c4d6;
       line-height: 1.5;
+    }
+
+    .battery-shell {
+      width: 100%;
+      height: 24px;
+      border: 2px solid #8be9fd;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #0d111a;
+      margin: 10px 0;
+      position: relative;
+    }
+
+    .battery-fill {
+      height: 100%;
+      width: 0%;
+      background: #6dff9b;
+      transition: width 0.4s ease, background 0.4s ease;
+    }
+
+    .battery-warn {
+      background: #ffd36d;
+    }
+
+    .battery-low {
+      background: #ff7b7b;
+    }
+
+    .battery-critical {
+      background: #ff3b3b;
+    }
+
+    .danger-note {
+      color: #ff7b7b;
     }
 
     .status {
@@ -763,11 +815,22 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="status">Battery: <span id="battery_state">--</span></div>
       <div class="small">Net current: <span id="net_current">--</span> mA</div>
     </div>
+
     <div class="card">
       <h2>Battery</h2>
-      <div class="value"><span id="battery_percent">--</span><span class="unit">%</span></div>
+
+      <div class="value">
+        <span id="battery_percent">--</span><span class="unit">%</span>
+      </div>
+
+      <div class="battery-shell">
+        <div id="battery_fill" class="battery-fill"></div>
+      </div>
+
       <div class="small">Voltage: <span id="battery_voltage">--</span> V</div>
+      <div class="small">Net current: <span id="battery_net_current">--</span> mA</div>
       <div class="status">State: <span id="battery_state_2">--</span></div>
+      <div class="small">LV status: <span id="battery_lv_status">--</span></div>
     </div>
 
     <div class="card">
@@ -808,6 +871,15 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="small">Protection: <span id="heltec_protection">--</span></div>
       <div class="small">Heltec actual: <span id="heltec_power_2">--</span></div>
     </div>
+
+    <div class="card">
+      <h2>System Control</h2>
+      <div class="small">Restart the ESP32 weather station safely.</div>
+      <button class="btn off" onclick="safeReboot()">Reboot ESP32</button>
+      <div class="status">Action: <span id="system_action_status">ready</span></div>
+    </div>
+
+
   </main>
 
   <footer>
@@ -857,6 +929,21 @@ async function updateData() {
     document.getElementById('battery_voltage').textContent = d.battery_voltage.toFixed(3);
     document.getElementById('battery_percent').textContent = d.battery_percent;
     document.getElementById('battery_state_2').textContent = d.battery_state;
+    document.getElementById('battery_net_current').textContent = d.net_current.toFixed(2);
+    document.getElementById('battery_lv_status').textContent = d.low_voltage_status;
+
+    const batteryFill = document.getElementById('battery_fill');
+    batteryFill.style.width = d.battery_percent + '%';
+
+    batteryFill.className = 'battery-fill';
+
+    if (d.low_voltage_status === 'critical') {
+      batteryFill.classList.add('battery-critical');
+    } else if (d.low_voltage_status === 'heltec off') {
+      batteryFill.classList.add('battery-low');
+    } else if (d.low_voltage_status === 'warning') {
+      batteryFill.classList.add('battery-warn');
+    }
 
     document.getElementById('status_bme280').textContent = d.status_bme280;
     document.getElementById('status_bh1750').textContent = d.status_bh1750;
@@ -879,6 +966,27 @@ async function updateData() {
 
     document.getElementById('heltec_power').textContent =
       d.heltec_power ? d.heltec_power.toUpperCase() : 'UNKNOWN';
+
+    async function safeReboot() {
+      const sure = confirm('Reboot the ESP32 weather station now?');
+
+      if (!sure) {
+        return;
+      }
+
+      try {
+        document.getElementById('system_action_status').textContent = 'rebooting...';
+
+        await fetch('/reboot');
+
+        setTimeout(() => {
+          document.getElementById('system_action_status').textContent =
+            'reboot sent - reconnecting...';
+        }, 1000);
+      } catch (e) {
+        document.getElementById('system_action_status').textContent = 'reboot failed';
+      }
+    }
 
     document.getElementById('low_voltage_status').textContent = d.low_voltage_status;
     document.getElementById('low_voltage_lockout').textContent = d.low_voltage_lockout;
@@ -1149,6 +1257,8 @@ void setupWiFiAndServer() {
 
   server.on("/download-log", handleDownloadLog);
   server.on("/clear-log", handleClearLog);
+
+  server.on("/reboot", handleReboot);
 
   server.begin();
   Serial.println("Web server started.");
@@ -1760,6 +1870,12 @@ void loop() {
   server.handleClient();
   ArduinoOTA.handle();
   maintainWiFi();
+
+  if (rebootRequested && millis() - rebootRequestedAt >= REBOOT_DELAY_MS) {
+  Serial.println("Rebooting now...");
+  delay(100);
+  ESP.restart();
+}
 
   if (millis() - lastSensorUpdate >= SENSOR_UPDATE_INTERVAL) {
     lastSensorUpdate = millis();
