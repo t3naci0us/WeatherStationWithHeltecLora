@@ -572,6 +572,273 @@ void handleReboot() {
 }
 
 //------------------------------------
+// History Summary
+//------------------------------------
+struct HistorySummary {
+  String rangeLabel = "unknown";
+  int rows = 0;
+
+  float tempMin = 9999;
+  float tempMax = -9999;
+  float tempSum = 0;
+
+  float humidityMin = 9999;
+  float humidityMax = -9999;
+  float humiditySum = 0;
+
+  float pressureStart = 0;
+  float pressureEnd = 0;
+  bool pressureStarted = false;
+
+  float luxMax = 0;
+  float solarPowerMax = 0;
+  float windMaxKPH = 0;
+  float gustMaxMS = 0;
+  float batteryMin = 9999;
+  float batterySum = 0;
+  float wifiMin = 9999;
+  float wifiMax = -9999;
+  float wifiSum = 0;
+  float netCurrentSum = 0;
+
+  int dirCounts[16] = {0};
+};
+
+//------------------------------------
+// CSV Helpers
+//------------------------------------
+String getCSVField(const String &line, int index) {
+  int start = 0;
+  int currentIndex = 0;
+
+  for (int i = 0; i <= line.length(); i++) {
+    if (i == line.length() || line.charAt(i) == ',') {
+      if (currentIndex == index) {
+        return line.substring(start, i);
+      }
+
+      start = i + 1;
+      currentIndex++;
+    }
+  }
+
+  return "";
+}
+
+time_t parseTimestamp(const String &stamp) {
+  // Expected format: YYYY-MM-DD HH:MM:SS
+  if (stamp.length() < 19) return 0;
+
+  struct tm t;
+  memset(&t, 0, sizeof(t));
+
+  t.tm_year = stamp.substring(0, 4).toInt() - 1900;
+  t.tm_mon  = stamp.substring(5, 7).toInt() - 1;
+  t.tm_mday = stamp.substring(8, 10).toInt();
+  t.tm_hour = stamp.substring(11, 13).toInt();
+  t.tm_min  = stamp.substring(14, 16).toInt();
+  t.tm_sec  = stamp.substring(17, 19).toInt();
+
+  return mktime(&t);
+}
+
+String dominantDirectionsJson(int counts[16]) {
+  const char* names[16] = {
+    "N","NNE","NE","ENE","E","ESE","SE","SSE",
+    "S","SSW","SW","WSW","W","WNW","NW","NNW"
+  };
+
+  String json = "[";
+  bool first = true;
+
+  for (int i = 0; i < 16; i++) {
+    if (counts[i] > 0) {
+      if (!first) json += ",";
+      json += "{\"dir\":\"" + String(names[i]) + "\",\"count\":" + String(counts[i]) + "}";
+      first = false;
+    }
+  }
+
+  json += "]";
+  return json;
+}
+
+//------------------------------------
+// History Endpoint
+//------------------------------------
+void handleHistory() {
+  if (!sdOK || !SD.exists("/weather.csv")) {
+    server.send(404, "application/json", "{\"ok\":false,\"message\":\"No weather log found\"}");
+    return;
+  }
+
+  String range = server.arg("range");
+  if (range == "") range = "24h";
+
+  unsigned long rangeSeconds = 24UL * 60UL * 60UL;
+
+  if (range == "7d") {
+    rangeSeconds = 7UL * 24UL * 60UL * 60UL;
+  } else if (range == "30d") {
+    rangeSeconds = 30UL * 24UL * 60UL * 60UL;
+  }
+
+  time_t nowTime;
+  time(&nowTime);
+
+  bool haveTime = nowTime > 100000;
+
+  File file = SD.open("/weather.csv", FILE_READ);
+
+  if (!file) {
+    server.send(500, "application/json", "{\"ok\":false,\"message\":\"Could not open weather.csv\"}");
+    return;
+  }
+
+  HistorySummary s;
+  s.rangeLabel = range;
+
+  bool headerSkipped = false;
+
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
+    line.trim();
+
+    if (line.length() == 0) continue;
+
+    if (!headerSkipped) {
+      headerSkipped = true;
+      continue;
+    }
+
+    String timestamp = getCSVField(line, 0);
+
+    if (haveTime) {
+      time_t rowTime = parseTimestamp(timestamp);
+      if (rowTime == 0) continue;
+
+      double age = difftime(nowTime, rowTime);
+
+      if (age < 0 || age > rangeSeconds) {
+        continue;
+      }
+    }
+
+    float temp = getCSVField(line, 1).toFloat();
+    float hum = getCSVField(line, 2).toFloat();
+    float pressure = getCSVField(line, 3).toFloat();
+    float lux = getCSVField(line, 4).toFloat();
+    float battV = getCSVField(line, 5).toFloat();
+    float battPercent = getCSVField(line, 6).toFloat();
+    float solarPower = getCSVField(line, 12).toFloat();
+    float netCurrent = getCSVField(line, 13).toFloat();
+    float windKPH = getCSVField(line, 16).toFloat();
+    float gustMS = getCSVField(line, 19).toFloat();
+    String windDir = getCSVField(line, 20);
+    float wifiPercent = getCSVField(line, 23).toFloat();
+
+    s.rows++;
+
+    if (temp < s.tempMin) s.tempMin = temp;
+    if (temp > s.tempMax) s.tempMax = temp;
+    s.tempSum += temp;
+
+    if (hum < s.humidityMin) s.humidityMin = hum;
+    if (hum > s.humidityMax) s.humidityMax = hum;
+    s.humiditySum += hum;
+
+    if (!s.pressureStarted) {
+      s.pressureStart = pressure;
+      s.pressureStarted = true;
+    }
+    s.pressureEnd = pressure;
+
+    if (lux > s.luxMax) s.luxMax = lux;
+    if (solarPower > s.solarPowerMax) s.solarPowerMax = solarPower;
+    if (windKPH > s.windMaxKPH) s.windMaxKPH = windKPH;
+    if (gustMS > s.gustMaxMS) s.gustMaxMS = gustMS;
+    if (battV < s.batteryMin) s.batteryMin = battV;
+
+    s.batterySum += battPercent;
+    s.netCurrentSum += netCurrent;
+
+    if (wifiPercent < s.wifiMin) s.wifiMin = wifiPercent;
+    if (wifiPercent > s.wifiMax) s.wifiMax = wifiPercent;
+    s.wifiSum += wifiPercent;
+
+    const char* names[16] = {
+      "N","NNE","NE","ENE","E","ESE","SE","SSE",
+      "S","SSW","SW","WSW","W","WNW","NW","NNW"
+    };
+
+    for (int i = 0; i < 16; i++) {
+      if (windDir == names[i]) {
+        s.dirCounts[i]++;
+        break;
+      }
+    }
+
+    // Keep server alive during long reads
+    if (s.rows % 50 == 0) {
+      server.handleClient();
+      delay(1);
+    }
+  }
+
+  file.close();
+
+  if (s.rows == 0) {
+    server.send(200, "application/json", "{\"ok\":false,\"message\":\"No rows in selected range\"}");
+    return;
+  }
+
+  float tempAvg = s.tempSum / s.rows;
+  float humAvg = s.humiditySum / s.rows;
+  float battAvg = s.batterySum / s.rows;
+  float wifiAvg = s.wifiSum / s.rows;
+  float netAvg = s.netCurrentSum / s.rows;
+
+  String pressureTrend = "steady";
+  if (s.pressureEnd > s.pressureStart + 1.0) pressureTrend = "rising";
+  if (s.pressureEnd < s.pressureStart - 1.0) pressureTrend = "falling";
+
+  String json = "{";
+  json += "\"ok\":true,";
+  json += "\"range\":\"" + range + "\",";
+  json += "\"rows\":" + String(s.rows) + ",";
+
+  json += "\"temp_min\":" + String(s.tempMin, 2) + ",";
+  json += "\"temp_max\":" + String(s.tempMax, 2) + ",";
+  json += "\"temp_avg\":" + String(tempAvg, 2) + ",";
+
+  json += "\"humidity_min\":" + String(s.humidityMin, 2) + ",";
+  json += "\"humidity_max\":" + String(s.humidityMax, 2) + ",";
+  json += "\"humidity_avg\":" + String(humAvg, 2) + ",";
+
+  json += "\"pressure_start\":" + String(s.pressureStart, 2) + ",";
+  json += "\"pressure_end\":" + String(s.pressureEnd, 2) + ",";
+  json += "\"pressure_trend\":\"" + pressureTrend + "\",";
+
+  json += "\"lux_max\":" + String(s.luxMax, 2) + ",";
+  json += "\"solar_power_max\":" + String(s.solarPowerMax, 2) + ",";
+  json += "\"wind_max_kph\":" + String(s.windMaxKPH, 2) + ",";
+  json += "\"gust_max_ms\":" + String(s.gustMaxMS, 2) + ",";
+
+  json += "\"battery_min\":" + String(s.batteryMin, 3) + ",";
+  json += "\"battery_avg\":" + String(battAvg, 2) + ",";
+
+  json += "\"wifi_min\":" + String(s.wifiMin, 1) + ",";
+  json += "\"wifi_max\":" + String(s.wifiMax, 1) + ",";
+  json += "\"wifi_avg\":" + String(wifiAvg, 1) + ",";
+
+  json += "\"net_current_avg\":" + String(netAvg, 2) + ",";
+  json += "\"direction_counts\":" + dominantDirectionsJson(s.dirCounts);
+
+  json += "}";
+
+  server.send(200, "application/json", json);
+}
+//------------------------------------
 //Embedded WebPage 
 //------------------------------------
 const char MAIN_PAGE[] PROGMEM = R"rawliteral(
@@ -1036,6 +1303,460 @@ setInterval(updateData, 2000);
 </body>
 </html>
 )rawliteral";
+
+//---------------------------------------
+//Report Page HTML
+//---------------------------------------
+const char REPORT_PAGE[] PROGMEM = R"rawliteral(
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HandiWorx Weather Report</title>
+<style>
+:root {
+  --bg: #06111f;
+  --panel: #0b1b31;
+  --panel2: #101f35;
+  --line: #27466b;
+  --cyan: #6ee7ff;
+  --blue: #36a3ff;
+  --orange: #ff8a1f;
+  --green: #8eea45;
+  --purple: #b27cff;
+  --red: #ff5f6d;
+  --text: #f5f8ff;
+  --muted: #9fb2cc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(54,163,255,0.18), transparent 40%),
+    radial-gradient(circle at top right, rgba(178,124,255,0.10), transparent 35%),
+    var(--bg);
+  color: var(--text);
+}
+
+.wrapper {
+  max-width: 1280px;
+  margin: auto;
+  padding: 18px;
+}
+
+.hero {
+  text-align: center;
+  padding: 18px 8px 12px;
+}
+
+.hero h1 {
+  font-size: clamp(32px, 7vw, 68px);
+  line-height: 0.95;
+  margin: 0;
+  letter-spacing: -2px;
+}
+
+.subtitle {
+  color: var(--cyan);
+  font-size: 18px;
+  margin-top: 8px;
+}
+
+.top-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.pill {
+  border: 1px solid var(--line);
+  background: rgba(11,27,49,0.85);
+  border-radius: 18px;
+  padding: 12px;
+  text-align: center;
+  box-shadow: 0 0 18px rgba(54,163,255,0.12);
+}
+
+.pill strong {
+  color: var(--cyan);
+  display: block;
+  font-size: 22px;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.nav button, .nav a {
+  border: 1px solid var(--line);
+  background: #11263e;
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 12px;
+  text-decoration: none;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.nav button.active {
+  background: var(--cyan);
+  color: #06111f;
+}
+
+.section {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  margin-top: 16px;
+  background: rgba(6,17,31,0.76);
+  box-shadow: 0 0 24px rgba(54,163,255,0.14);
+}
+
+.section-title {
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  margin-bottom: 14px;
+}
+
+.grid3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: linear-gradient(180deg, rgba(16,31,53,0.98), rgba(8,24,43,0.98));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  min-height: 135px;
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  color: var(--cyan);
+  font-size: 20px;
+}
+
+.big {
+  font-size: 38px;
+  font-weight: 900;
+}
+
+.orange { color: var(--orange); }
+.green { color: var(--green); }
+.cyan { color: var(--cyan); }
+.purple { color: var(--purple); }
+.red { color: var(--red); }
+
+.small {
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.takeaways {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.takeaway {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  background: rgba(16,31,53,0.82);
+  color: #dbe8ff;
+}
+
+.loading {
+  opacity: 0.65;
+}
+
+.footer {
+  text-align: center;
+  color: var(--muted);
+  padding: 22px;
+}
+
+@media (max-width: 600px) {
+  .wrapper { padding: 10px; }
+  .hero h1 { font-size: 40px; }
+}
+</style>
+</head>
+<body>
+<div class="wrapper">
+  <header class="hero">
+    <h1>Weather Log<br>Dashboard</h1>
+    <div class="subtitle">HandiWorx Solar Weather Station</div>
+  </header>
+
+  <div class="nav">
+    <button id="btn24h" onclick="setRange('24h')" class="active">24 Hours</button>
+    <button id="btn7d" onclick="setRange('7d')">7 Days</button>
+    <button id="btn30d" onclick="setRange('30d')">30 Days</button>
+    <a href="/cards">Engineering View</a>
+    <a href="/download-log">Download CSV</a>
+  </div>
+
+  <div class="top-stats">
+    <div class="pill"><strong id="samples">--</strong>samples</div>
+    <div class="pill"><strong id="rangeLabel">24h</strong>selected range</div>
+    <div class="pill"><strong id="liveBattery">--%</strong>battery now</div>
+    <div class="pill"><strong id="liveWifi">--%</strong>Wi-Fi now</div>
+  </div>
+
+  <section class="section">
+    <div class="section-title">🌦 1. Weather Snapshot</div>
+    <div class="grid3">
+      <div class="card">
+        <h2 class="orange">Temperature</h2>
+        <div class="big"><span id="tempNow">--</span>°C</div>
+        <div class="small">
+          Avg <span id="tempAvg">--</span>°C<br>
+          Min <span id="tempMin">--</span>°C<br>
+          Max <span id="tempMax">--</span>°C
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="green">Humidity</h2>
+        <div class="big"><span id="humNow">--</span>%</div>
+        <div class="small">
+          Avg <span id="humAvg">--</span>%<br>
+          Min <span id="humMin">--</span>%<br>
+          Max <span id="humMax">--</span>%
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cyan">Pressure</h2>
+        <div class="big"><span id="pressureNow">--</span></div>
+        <div class="small">
+          Start <span id="pressureStart">--</span> hPa<br>
+          End <span id="pressureEnd">--</span> hPa<br>
+          Trend <span id="pressureTrend">--</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-title">☀ 2. Light & Power</div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Current Power</h2>
+        <div class="big"><span id="solarNow">--</span> mW</div>
+        <div class="small">
+          Solar peak <span id="solarPeak">--</span> mW<br>
+          Light now <span id="luxNow">--</span> lux<br>
+          Peak light <span id="luxPeak">--</span> lux
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Battery</h2>
+        <div class="big"><span id="batteryNow">--</span>%</div>
+        <div class="small">
+          Average <span id="batteryAvg">--</span>%<br>
+          Lowest voltage <span id="batteryMin">--</span> V<br>
+          Net current avg <span id="netAvg">--</span> mA
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-title">💨 3. Wind & Direction</div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Wind</h2>
+        <div class="big"><span id="windNow">--</span> mph</div>
+        <div class="small">
+          Max wind <span id="windMax">--</span> km/h<br>
+          Peak gust <span id="gustMax">--</span> m/s<br>
+          Direction now <span id="dirNow">--</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Dominant Directions</h2>
+        <div class="small" id="dirCounts">No direction data yet</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-title">📶 4. Connectivity & System</div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Wi-Fi</h2>
+        <div class="big"><span id="wifiNow">--</span>%</div>
+        <div class="small">
+          Average <span id="wifiAvg">--</span>%<br>
+          Best <span id="wifiMax">--</span>%<br>
+          Lowest <span id="wifiMin">--</span>%
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>System</h2>
+        <div class="small">
+          IP: <span id="ipNow">--</span><br>
+          Uptime: <span id="uptimeNow">--</span><br>
+          Heltec power: <span id="heltecNow">--</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-title">⭐ Key Takeaways</div>
+    <div class="takeaways">
+      <div class="takeaway" id="takeaway1">Loading weather summary...</div>
+      <div class="takeaway" id="takeaway2">Loading power summary...</div>
+      <div class="takeaway" id="takeaway3">Loading connectivity summary...</div>
+    </div>
+  </section>
+
+  <div class="footer">Report dashboard generated from live data and SD-card log.</div>
+</div>
+
+<script>
+let currentRange = '24h';
+
+function setActiveButton(range) {
+  document.getElementById('btn24h').classList.remove('active');
+  document.getElementById('btn7d').classList.remove('active');
+  document.getElementById('btn30d').classList.remove('active');
+
+  if (range === '24h') document.getElementById('btn24h').classList.add('active');
+  if (range === '7d') document.getElementById('btn7d').classList.add('active');
+  if (range === '30d') document.getElementById('btn30d').classList.add('active');
+}
+
+async function setRange(range) {
+  currentRange = range;
+  setActiveButton(range);
+  await loadHistory();
+}
+
+async function loadLive() {
+  try {
+    const res = await fetch('/data');
+    const d = await res.json();
+
+    document.getElementById('tempNow').textContent = d.temperature.toFixed(1);
+    document.getElementById('humNow').textContent = d.humidity.toFixed(1);
+    document.getElementById('pressureNow').textContent = d.pressure.toFixed(1);
+    document.getElementById('luxNow').textContent = d.lux.toFixed(0);
+
+    document.getElementById('solarNow').textContent = d.solar_power.toFixed(0);
+    document.getElementById('batteryNow').textContent = d.battery_percent;
+    document.getElementById('liveBattery').textContent = d.battery_percent + '%';
+
+    document.getElementById('windNow').textContent = d.wind_mph.toFixed(1);
+    document.getElementById('dirNow').textContent = d.wind_dir;
+
+    document.getElementById('wifiNow').textContent = d.wifi_percent;
+    document.getElementById('liveWifi').textContent = d.wifi_percent + '%';
+
+    document.getElementById('ipNow').textContent = d.ip_address;
+    document.getElementById('uptimeNow').textContent = d.uptime;
+    document.getElementById('heltecNow').textContent = d.heltec_power;
+  } catch(e) {}
+}
+
+async function loadHistory() {
+  try {
+    const res = await fetch('/history?range=' + currentRange);
+    const h = await res.json();
+
+    if (!h.ok) {
+      document.getElementById('samples').textContent = '0';
+      document.getElementById('takeaway1').textContent = h.message || 'No history data available.';
+      return;
+    }
+
+    document.getElementById('samples').textContent = h.rows;
+    document.getElementById('rangeLabel').textContent = h.range;
+
+    document.getElementById('tempAvg').textContent = h.temp_avg.toFixed(1);
+    document.getElementById('tempMin').textContent = h.temp_min.toFixed(1);
+    document.getElementById('tempMax').textContent = h.temp_max.toFixed(1);
+
+    document.getElementById('humAvg').textContent = h.humidity_avg.toFixed(1);
+    document.getElementById('humMin').textContent = h.humidity_min.toFixed(1);
+    document.getElementById('humMax').textContent = h.humidity_max.toFixed(1);
+
+    document.getElementById('pressureStart').textContent = h.pressure_start.toFixed(1);
+    document.getElementById('pressureEnd').textContent = h.pressure_end.toFixed(1);
+    document.getElementById('pressureTrend').textContent = h.pressure_trend;
+
+    document.getElementById('solarPeak').textContent = h.solar_power_max.toFixed(0);
+    document.getElementById('luxPeak').textContent = h.lux_max.toFixed(0);
+
+    document.getElementById('batteryAvg').textContent = h.battery_avg.toFixed(1);
+    document.getElementById('batteryMin').textContent = h.battery_min.toFixed(3);
+    document.getElementById('netAvg').textContent = h.net_current_avg.toFixed(1);
+
+    document.getElementById('windMax').textContent = h.wind_max_kph.toFixed(1);
+    document.getElementById('gustMax').textContent = h.gust_max_ms.toFixed(1);
+
+    document.getElementById('wifiAvg').textContent = h.wifi_avg.toFixed(1);
+    document.getElementById('wifiMax').textContent = h.wifi_max.toFixed(1);
+    document.getElementById('wifiMin').textContent = h.wifi_min.toFixed(1);
+
+    let dirText = '';
+    h.direction_counts
+      .sort((a,b) => b.count - a.count)
+      .slice(0, 5)
+      .forEach(x => {
+        dirText += x.dir + ': ' + x.count + ' samples<br>';
+      });
+
+    document.getElementById('dirCounts').innerHTML = dirText || 'No direction data';
+
+    document.getElementById('takeaway1').textContent =
+      'Temperature ranged from ' + h.temp_min.toFixed(1) + '°C to ' + h.temp_max.toFixed(1) + '°C over this period.';
+
+    document.getElementById('takeaway2').textContent =
+      'Solar peak was ' + h.solar_power_max.toFixed(0) + ' mW, with average net current of ' + h.net_current_avg.toFixed(1) + ' mA.';
+
+    document.getElementById('takeaway3').textContent =
+      'Pressure trend was ' + h.pressure_trend + ', and Wi-Fi averaged ' + h.wifi_avg.toFixed(1) + '%.';
+
+  } catch(e) {
+    document.getElementById('takeaway1').textContent = 'Failed to load history data.';
+  }
+}
+
+loadLive();
+loadHistory();
+setInterval(loadLive, 2000);
+</script>
+</body>
+</html>
+)rawliteral";
+
 //---------------------
 //--END WEBPAGE CONTENT
 //---------------------
@@ -1134,6 +1855,10 @@ void handleDownloadLog() {
 
   server.streamFile(file, "text/csv");
   file.close();
+}
+
+void handleReportPage() {
+  server.send_P(200, "text/html", REPORT_PAGE);
 }
 
 void handleClearLog() {
@@ -1249,7 +1974,9 @@ void setupWiFiAndServer() {
     startFallbackAP();
   }
 
-  server.on("/", handleRoot);
+  server.on("/cards", handleRoot);
+  server.on("/", handleReportPage);
+  server.on("/history", handleHistory);
   server.on("/data", handleData);
 
   server.on("/heltec/on", handleHeltecOn);
