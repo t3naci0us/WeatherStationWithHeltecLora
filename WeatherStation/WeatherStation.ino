@@ -574,6 +574,9 @@ void handleReboot() {
 //------------------------------------
 // History Summary
 //------------------------------------
+
+#define HISTORY_CHART_POINTS 80
+
 struct HistorySummary {
   String rangeLabel = "unknown";
   int rows = 0;
@@ -602,6 +605,18 @@ struct HistorySummary {
   float netCurrentSum = 0;
 
   int dirCounts[16] = {0};
+};
+
+struct ChartData {
+  float temp[HISTORY_CHART_POINTS];
+  float humidity[HISTORY_CHART_POINTS];
+  float pressure[HISTORY_CHART_POINTS];
+  float solar[HISTORY_CHART_POINTS];
+  float battery[HISTORY_CHART_POINTS];
+  float wind[HISTORY_CHART_POINTS];
+  float wifi[HISTORY_CHART_POINTS];
+
+  int count = 0;
 };
 
 //------------------------------------
@@ -663,6 +678,18 @@ String dominantDirectionsJson(int counts[16]) {
   return json;
 }
 
+String floatArrayJson(float values[], int count, int decimals) {
+  String json = "[";
+
+  for (int i = 0; i < count; i++) {
+    if (i > 0) json += ",";
+    json += String(values[i], decimals);
+  }
+
+  json += "]";
+  return json;
+}
+
 //------------------------------------
 // History Endpoint
 //------------------------------------
@@ -696,9 +723,18 @@ void handleHistory() {
   }
 
   HistorySummary s;
+  ChartData chart;
+
   s.rangeLabel = range;
 
   bool headerSkipped = false;
+
+  int validRowsSeen = 0;
+  int chartStride = 1;
+
+  if (range == "24h") chartStride = 1;
+  if (range == "7d") chartStride = 5;
+  if (range == "30d") chartStride = 20;
 
   while (file.available()) {
     String line = file.readStringUntil('\n');
@@ -738,6 +774,7 @@ void handleHistory() {
     float wifiPercent = getCSVField(line, 23).toFloat();
 
     s.rows++;
+    validRowsSeen++;
 
     if (temp < s.tempMin) s.tempMin = temp;
     if (temp > s.tempMax) s.tempMax = temp;
@@ -778,7 +815,18 @@ void handleHistory() {
       }
     }
 
-    // Keep server alive during long reads
+    // Downsample chart points so JSON stays small.
+    if ((validRowsSeen % chartStride == 0) && chart.count < HISTORY_CHART_POINTS) {
+      chart.temp[chart.count] = temp;
+      chart.humidity[chart.count] = hum;
+      chart.pressure[chart.count] = pressure;
+      chart.solar[chart.count] = solarPower;
+      chart.battery[chart.count] = battPercent;
+      chart.wind[chart.count] = windKPH;
+      chart.wifi[chart.count] = wifiPercent;
+      chart.count++;
+    }
+
     if (s.rows % 50 == 0) {
       server.handleClient();
       delay(1);
@@ -832,7 +880,15 @@ void handleHistory() {
   json += "\"wifi_avg\":" + String(wifiAvg, 1) + ",";
 
   json += "\"net_current_avg\":" + String(netAvg, 2) + ",";
-  json += "\"direction_counts\":" + dominantDirectionsJson(s.dirCounts);
+  json += "\"direction_counts\":" + dominantDirectionsJson(s.dirCounts) + ",";
+
+  json += "\"chart_temp\":" + floatArrayJson(chart.temp, chart.count, 2) + ",";
+  json += "\"chart_humidity\":" + floatArrayJson(chart.humidity, chart.count, 1) + ",";
+  json += "\"chart_pressure\":" + floatArrayJson(chart.pressure, chart.count, 1) + ",";
+  json += "\"chart_solar\":" + floatArrayJson(chart.solar, chart.count, 0) + ",";
+  json += "\"chart_battery\":" + floatArrayJson(chart.battery, chart.count, 0) + ",";
+  json += "\"chart_wind\":" + floatArrayJson(chart.wind, chart.count, 1) + ",";
+  json += "\"chart_wifi\":" + floatArrayJson(chart.wifi, chart.count, 0);
 
   json += "}";
 
@@ -1313,22 +1369,62 @@ const char REPORT_PAGE[] PROGMEM = R"rawliteral(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HandiWorx Weather Report</title>
+<title>HandiWorx Weather Dashboard</title>
+
 <style>
 :root {
-  --bg: #06111f;
-  --panel: #0b1b31;
-  --panel2: #101f35;
-  --line: #27466b;
-  --cyan: #6ee7ff;
-  --blue: #36a3ff;
-  --orange: #ff8a1f;
-  --green: #8eea45;
-  --purple: #b27cff;
-  --red: #ff5f6d;
-  --text: #f5f8ff;
-  --muted: #9fb2cc;
+  --bg0: #030914;
+  --bg1: #061428;
+  --panel: rgba(12, 29, 52, 0.86);
+  --panel2: rgba(18, 38, 66, 0.92);
+  --line: rgba(116, 201, 255, 0.22);
+  --line2: rgba(116, 201, 255, 0.42);
+  --text: #f5f9ff;
+  --muted: #9fb3cf;
+  --cyan: #70e8ff;
+  --blue: #38a6ff;
+  --orange: #ff8a23;
+  --yellow: #ffd447;
+  --green: #8dff73;
+  --purple: #b68cff;
+  --red: #ff6475;
+  --shadow: rgba(0,0,0,0.38);
 }
+
+.mini-chart {
+  width: 100%;
+  height: 76px;
+  margin-top: 12px;
+  border: 1px solid rgba(116,201,255,0.14);
+  border-radius: 12px;
+  background:
+    linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px),
+    rgba(0,0,0,0.14);
+  background-size: 20px 20px;
+  overflow: hidden;
+}
+
+.mini-chart svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px rgba(112,232,255,0.65));
+}
+
+.chart-line.orange { stroke: var(--orange); }
+.chart-line.green { stroke: var(--green); }
+.chart-line.purple { stroke: var(--purple); }
+.chart-line.yellow { stroke: var(--yellow); }
+.chart-line.red { stroke: var(--red); }
 
 * {
   box-sizing: border-box;
@@ -1336,128 +1432,217 @@ const char REPORT_PAGE[] PROGMEM = R"rawliteral(
 
 body {
   margin: 0;
+  color: var(--text);
   font-family: Arial, Helvetica, sans-serif;
   background:
-    radial-gradient(circle at top left, rgba(54,163,255,0.18), transparent 40%),
-    radial-gradient(circle at top right, rgba(178,124,255,0.10), transparent 35%),
-    var(--bg);
-  color: var(--text);
+    radial-gradient(circle at 10% 4%, rgba(82, 180, 255, 0.20), transparent 28%),
+    radial-gradient(circle at 88% 2%, rgba(170, 91, 255, 0.14), transparent 26%),
+    radial-gradient(circle at 50% 100%, rgba(0, 255, 200, 0.06), transparent 36%),
+    linear-gradient(180deg, var(--bg1), var(--bg0));
+  min-height: 100vh;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(112,232,255,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(112,232,255,0.035) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, black, transparent 86%);
 }
 
 .wrapper {
-  max-width: 1280px;
+  width: min(1280px, 100%);
   margin: auto;
-  padding: 18px;
+  padding: 16px;
 }
 
 .hero {
-  text-align: center;
-  padding: 18px 8px 12px;
-}
-
-.hero h1 {
-  font-size: clamp(32px, 7vw, 68px);
-  line-height: 0.95;
-  margin: 0;
-  letter-spacing: -2px;
-}
-
-.subtitle {
-  color: var(--cyan);
-  font-size: 18px;
-  margin-top: 8px;
-}
-
-.top-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
-  margin: 18px 0;
-}
-
-.pill {
+  position: relative;
+  overflow: hidden;
   border: 1px solid var(--line);
-  background: rgba(11,27,49,0.85);
-  border-radius: 18px;
-  padding: 12px;
-  text-align: center;
-  box-shadow: 0 0 18px rgba(54,163,255,0.12);
+  border-radius: 28px;
+  padding: 24px 18px 20px;
+  margin-bottom: 14px;
+  background:
+    linear-gradient(135deg, rgba(11,29,54,0.92), rgba(5,14,28,0.92)),
+    radial-gradient(circle at right, rgba(112,232,255,0.16), transparent 40%);
+  box-shadow: 0 18px 40px var(--shadow), inset 0 0 28px rgba(112,232,255,0.04);
 }
 
-.pill strong {
+.hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.logo-block h1 {
+  margin: 0;
+  font-size: clamp(36px, 7vw, 76px);
+  line-height: 0.92;
+  letter-spacing: -3px;
+  text-shadow: 0 0 24px rgba(112,232,255,0.20);
+}
+
+.logo-block .sub {
+  margin-top: 10px;
   color: var(--cyan);
-  display: block;
-  font-size: 22px;
+  font-size: clamp(15px, 2.5vw, 20px);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.weather-icon {
+  font-size: clamp(54px, 12vw, 110px);
+  filter: drop-shadow(0 0 18px rgba(112,232,255,0.35));
 }
 
 .nav {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
   gap: 10px;
+  margin-top: 18px;
 }
 
-.nav button, .nav a {
-  border: 1px solid var(--line);
-  background: #11263e;
+.nav button,
+.nav a {
+  border: 1px solid var(--line2);
+  border-radius: 999px;
   color: var(--text);
-  padding: 10px 14px;
-  border-radius: 12px;
+  background: rgba(20, 45, 76, 0.72);
+  padding: 11px 16px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
   text-decoration: none;
-  font-weight: bold;
   cursor: pointer;
+  box-shadow: inset 0 0 16px rgba(112,232,255,0.05);
 }
 
 .nav button.active {
-  background: var(--cyan);
-  color: #06111f;
+  background: linear-gradient(135deg, var(--cyan), var(--blue));
+  color: #03101f;
+  border-color: transparent;
+}
+
+.top-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.pill {
+  border: 1px solid var(--line);
+  background: rgba(8, 22, 42, 0.78);
+  border-radius: 18px;
+  padding: 14px;
+  text-align: center;
+  box-shadow: 0 10px 26px rgba(0,0,0,0.22);
+}
+
+.pill strong {
+  display: block;
+  color: var(--cyan);
+  font-size: 24px;
+}
+
+.pill span {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .section {
   border: 1px solid var(--line);
-  border-radius: 18px;
+  background: rgba(5, 16, 32, 0.70);
+  border-radius: 24px;
   padding: 16px;
-  margin-top: 16px;
-  background: rgba(6,17,31,0.76);
-  box-shadow: 0 0 24px rgba(54,163,255,0.14);
+  margin-top: 14px;
+  box-shadow: 0 16px 38px rgba(0,0,0,0.30), inset 0 0 32px rgba(112,232,255,0.035);
 }
 
 .section-title {
-  font-size: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 23px;
   font-weight: 900;
-  letter-spacing: 1px;
+  letter-spacing: 0.8px;
   margin-bottom: 14px;
 }
 
 .grid3 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
   gap: 12px;
 }
 
 .grid2 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
   gap: 12px;
 }
 
 .card {
-  background: linear-gradient(180deg, rgba(16,31,53,0.98), rgba(8,24,43,0.98));
+  position: relative;
+  overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 18px;
   padding: 16px;
-  min-height: 135px;
+  min-height: 150px;
+  background:
+    linear-gradient(180deg, rgba(20, 40, 70, 0.96), rgba(9, 24, 44, 0.96));
+  box-shadow: 0 12px 28px rgba(0,0,0,0.24);
+}
+
+.card::after {
+  content: "";
+  position: absolute;
+  inset: auto -30% -40% auto;
+  width: 190px;
+  height: 190px;
+  background: radial-gradient(circle, rgba(112,232,255,0.09), transparent 65%);
+  pointer-events: none;
 }
 
 .card h2 {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
+  font-size: 18px;
   color: var(--cyan);
-  font-size: 20px;
+  text-transform: uppercase;
+  letter-spacing: 1.3px;
 }
 
 .big {
-  font-size: 38px;
+  font-size: clamp(34px, 8vw, 52px);
   font-weight: 900;
+  line-height: 1;
+  margin: 8px 0 12px;
+}
+
+.unit {
+  color: var(--muted);
+  font-size: 18px;
+  margin-left: 4px;
+}
+
+.small {
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.stat-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid rgba(116,201,255,0.12);
+  padding-top: 8px;
+  margin-top: 8px;
 }
 
 .orange { color: var(--orange); }
@@ -1465,164 +1650,257 @@ body {
 .cyan { color: var(--cyan); }
 .purple { color: var(--purple); }
 .red { color: var(--red); }
+.yellow { color: var(--yellow); }
 
-.small {
+.meter {
+  width: 100%;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  overflow: hidden;
+  margin: 12px 0;
+  border: 1px solid rgba(116,201,255,0.18);
+}
+
+.fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--blue), var(--cyan));
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.fill.battery {
+  background: linear-gradient(90deg, var(--green), var(--cyan));
+}
+
+.fill.solar {
+  background: linear-gradient(90deg, var(--orange), var(--yellow));
+}
+
+.fill.wifi {
+  background: linear-gradient(90deg, var(--purple), var(--cyan));
+}
+
+.alert {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
   color: var(--muted);
-  font-size: 15px;
-  line-height: 1.55;
 }
 
 .takeaways {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
   gap: 12px;
 }
 
 .takeaway {
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 14px;
-  background: rgba(16,31,53,0.82);
-  color: #dbe8ff;
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(16, 37, 66, 0.88);
+  color: #e6f1ff;
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-.loading {
-  opacity: 0.65;
+.takeaway .emoji {
+  font-size: 34px;
+}
+
+.direction-list {
+  display: grid;
+  gap: 7px;
+}
+
+.dir-row {
+  display: grid;
+  grid-template-columns: 48px 1fr 54px;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.dir-bar {
+  height: 9px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.dir-bar div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--blue), var(--cyan));
 }
 
 .footer {
   text-align: center;
   color: var(--muted);
-  padding: 22px;
+  padding: 24px 8px 12px;
+  font-size: 13px;
 }
 
-@media (max-width: 600px) {
-  .wrapper { padding: 10px; }
-  .hero h1 { font-size: 40px; }
+@media (max-width: 620px) {
+  .wrapper {
+    padding: 10px;
+  }
+
+  .hero {
+    border-radius: 20px;
+    padding: 18px 14px;
+  }
+
+  .logo-block h1 {
+    letter-spacing: -1px;
+  }
+
+  .weather-icon {
+    display: none;
+  }
+
+  .section {
+    border-radius: 18px;
+    padding: 12px;
+  }
+
+  .card {
+    border-radius: 16px;
+    min-height: unset;
+  }
 }
 </style>
 </head>
+
 <body>
 <div class="wrapper">
+
   <header class="hero">
-    <h1>Weather Log<br>Dashboard</h1>
-    <div class="subtitle">HandiWorx Solar Weather Station</div>
+    <div class="hero-top">
+      <div class="logo-block">
+        <h1>Weather Log<br>Dashboard</h1>
+        <div class="sub">HandiWorx Solar Weather Station</div>
+      </div>
+      <div class="weather-icon">🌦️</div>
+    </div>
+
+    <div class="nav">
+      <button id="btn24h" onclick="setRange('24h')" class="active">24 Hours</button>
+      <button id="btn7d" onclick="setRange('7d')">7 Days</button>
+      <button id="btn30d" onclick="setRange('30d')">30 Days</button>
+      <a href="/cards">Engineering View</a>
+      <a href="/download-log">Download CSV</a>
+    </div>
   </header>
 
-  <div class="nav">
-    <button id="btn24h" onclick="setRange('24h')" class="active">24 Hours</button>
-    <button id="btn7d" onclick="setRange('7d')">7 Days</button>
-    <button id="btn30d" onclick="setRange('30d')">30 Days</button>
-    <a href="/cards">Engineering View</a>
-    <a href="/download-log">Download CSV</a>
-  </div>
-
   <div class="top-stats">
-    <div class="pill"><strong id="samples">--</strong>samples</div>
-    <div class="pill"><strong id="rangeLabel">24h</strong>selected range</div>
-    <div class="pill"><strong id="liveBattery">--%</strong>battery now</div>
-    <div class="pill"><strong id="liveWifi">--%</strong>Wi-Fi now</div>
+    <div class="pill"><strong id="samples">--</strong><span>samples in range</span></div>
+    <div class="pill"><strong id="rangeLabel">24h</strong><span>selected range</span></div>
+    <div class="pill"><strong id="liveBattery">--%</strong><span>battery now</span></div>
+    <div class="pill"><strong id="liveWifi">--%</strong><span>Wi-Fi now</span></div>
   </div>
 
   <section class="section">
-    <div class="section-title">🌦 1. Weather Snapshot</div>
+    <div class="section-title">🌤️ 1. Weather Snapshot</div>
+
     <div class="grid3">
       <div class="card">
         <h2 class="orange">Temperature</h2>
-        <div class="big"><span id="tempNow">--</span>°C</div>
-        <div class="small">
-          Avg <span id="tempAvg">--</span>°C<br>
-          Min <span id="tempMin">--</span>°C<br>
-          Max <span id="tempMax">--</span>°C
-        </div>
+        <div class="big"><span id="tempNow">--</span><span class="unit">°C</span></div>
+        <div class="mini-chart" id="chart_temp"></div>
+        <div class="stat-line"><span>Average</span><strong><span id="tempAvg">--</span>°C</strong></div>
+        <div class="stat-line"><span>Minimum</span><strong><span id="tempMin">--</span>°C</strong></div>
+        <div class="stat-line"><span>Maximum</span><strong><span id="tempMax">--</span>°C</strong></div>
       </div>
 
       <div class="card">
         <h2 class="green">Humidity</h2>
-        <div class="big"><span id="humNow">--</span>%</div>
-        <div class="small">
-          Avg <span id="humAvg">--</span>%<br>
-          Min <span id="humMin">--</span>%<br>
-          Max <span id="humMax">--</span>%
-        </div>
+        <div class="big"><span id="humNow">--</span><span class="unit">%</span></div>
+        <div class="meter"><div id="humFill" class="fill"></div></div>
+        <div class="mini-chart" id="chart_humidity"></div>
+        <div class="stat-line"><span>Average</span><strong><span id="humAvg">--</span>%</strong></div>
+        <div class="stat-line"><span>Range</span><strong><span id="humMin">--</span>% → <span id="humMax">--</span>%</strong></div>
       </div>
 
       <div class="card">
         <h2 class="cyan">Pressure</h2>
-        <div class="big"><span id="pressureNow">--</span></div>
-        <div class="small">
-          Start <span id="pressureStart">--</span> hPa<br>
-          End <span id="pressureEnd">--</span> hPa<br>
-          Trend <span id="pressureTrend">--</span>
-        </div>
+        <div class="big"><span id="pressureNow">--</span><span class="unit">hPa</span></div>
+        <div class="mini-chart" id="chart_pressure"></div>
+        <div class="stat-line"><span>Start</span><strong><span id="pressureStart">--</span> hPa</strong></div>
+        <div class="stat-line"><span>End</span><strong><span id="pressureEnd">--</span> hPa</strong></div>
+        <div class="alert">Trend: <strong id="pressureTrend">--</strong></div>
       </div>
     </div>
   </section>
 
   <section class="section">
-    <div class="section-title">☀ 2. Light & Power</div>
+    <div class="section-title">☀️ 2. Light & Power</div>
+
     <div class="grid2">
       <div class="card">
-        <h2>Current Power</h2>
-        <div class="big"><span id="solarNow">--</span> mW</div>
-        <div class="small">
-          Solar peak <span id="solarPeak">--</span> mW<br>
-          Light now <span id="luxNow">--</span> lux<br>
-          Peak light <span id="luxPeak">--</span> lux
-        </div>
+        <h2 class="yellow">Light & Solar</h2>
+        <div class="big"><span id="solarNow">--</span><span class="unit">mW</span></div>
+        <div class="meter"><div id="solarFill" class="fill solar"></div></div>
+        <div class="mini-chart" id="chart_battery"></div>
+        <div class="mini-chart" id="chart_solar"></div>
+        <div class="stat-line"><span>Solar peak</span><strong><span id="solarPeak">--</span> mW</strong></div>
+        <div class="stat-line"><span>Light now</span><strong><span id="luxNow">--</span> lux</strong></div>
+        <div class="stat-line"><span>Peak light</span><strong><span id="luxPeak">--</span> lux</strong></div>
       </div>
 
       <div class="card">
-        <h2>Battery</h2>
-        <div class="big"><span id="batteryNow">--</span>%</div>
-        <div class="small">
-          Average <span id="batteryAvg">--</span>%<br>
-          Lowest voltage <span id="batteryMin">--</span> V<br>
-          Net current avg <span id="netAvg">--</span> mA
-        </div>
+        <h2 class="green">Battery</h2>
+        <div class="big"><span id="batteryNow">--</span><span class="unit">%</span></div>
+        <div class="meter"><div id="batteryFill" class="fill battery"></div></div>
+        <div class="stat-line"><span>Average</span><strong><span id="batteryAvg">--</span>%</strong></div>
+        <div class="stat-line"><span>Lowest voltage</span><strong><span id="batteryMin">--</span> V</strong></div>
+        <div class="alert">Net current avg: <strong id="netAvg">--</strong> mA</div>
       </div>
     </div>
   </section>
 
   <section class="section">
     <div class="section-title">💨 3. Wind & Direction</div>
+
     <div class="grid2">
       <div class="card">
-        <h2>Wind</h2>
-        <div class="big"><span id="windNow">--</span> mph</div>
-        <div class="small">
-          Max wind <span id="windMax">--</span> km/h<br>
-          Peak gust <span id="gustMax">--</span> m/s<br>
-          Direction now <span id="dirNow">--</span>
-        </div>
+        <h2 class="cyan">Wind Now</h2>
+        <div class="big"><span id="windNow">--</span><span class="unit">mph</span></div>
+        <div class="stat-line"><span>Max wind</span><strong><span id="windMax">--</span> km/h</strong></div>
+        <div class="stat-line"><span>Peak gust</span><strong><span id="gustMax">--</span> m/s</strong></div>
+        <div class="alert">Direction now: <strong id="dirNow">--</strong></div>
       </div>
 
       <div class="card">
-        <h2>Dominant Directions</h2>
-        <div class="small" id="dirCounts">No direction data yet</div>
+        <h2 class="purple">Dominant Directions</h2>
+        <div id="dirCounts" class="direction-list small">No direction data yet</div>
       </div>
     </div>
   </section>
 
   <section class="section">
     <div class="section-title">📶 4. Connectivity & System</div>
+
     <div class="grid2">
       <div class="card">
-        <h2>Wi-Fi</h2>
-        <div class="big"><span id="wifiNow">--</span>%</div>
-        <div class="small">
-          Average <span id="wifiAvg">--</span>%<br>
-          Best <span id="wifiMax">--</span>%<br>
-          Lowest <span id="wifiMin">--</span>%
-        </div>
+        <h2 class="purple">Wi-Fi Signal</h2>
+        <div class="big"><span id="wifiNow">--</span><span class="unit">%</span></div>
+        <div class="meter"><div id="wifiFill" class="fill wifi"></div></div>
+        <div class="mini-chart" id="chart_wifi"></div>
+        <div class="stat-line"><span>Average</span><strong><span id="wifiAvg">--</span>%</strong></div>
+        <div class="stat-line"><span>Best</span><strong><span id="wifiMax">--</span>%</strong></div>
+        <div class="stat-line"><span>Lowest</span><strong><span id="wifiMin">--</span>%</strong></div>
       </div>
 
       <div class="card">
-        <h2>System</h2>
+        <h2 class="cyan">System</h2>
         <div class="small">
-          IP: <span id="ipNow">--</span><br>
-          Uptime: <span id="uptimeNow">--</span><br>
-          Heltec power: <span id="heltecNow">--</span>
+          IP: <strong id="ipNow">--</strong><br>
+          Uptime: <strong id="uptimeNow">--</strong><br>
+          Heltec power: <strong id="heltecNow">--</strong>
         </div>
       </div>
     </div>
@@ -1630,18 +1908,26 @@ body {
 
   <section class="section">
     <div class="section-title">⭐ Key Takeaways</div>
+
     <div class="takeaways">
-      <div class="takeaway" id="takeaway1">Loading weather summary...</div>
-      <div class="takeaway" id="takeaway2">Loading power summary...</div>
-      <div class="takeaway" id="takeaway3">Loading connectivity summary...</div>
+      <div class="takeaway"><div class="emoji">🌡️</div><div id="takeaway1">Loading weather summary...</div></div>
+      <div class="takeaway"><div class="emoji">☀️</div><div id="takeaway2">Loading power summary...</div></div>
+      <div class="takeaway"><div class="emoji">📶</div><div id="takeaway3">Loading connectivity summary...</div></div>
     </div>
   </section>
 
-  <div class="footer">Report dashboard generated from live data and SD-card log.</div>
+  <div class="footer">
+    Live dashboard from ESP32 / SD-card weather log · <a href="/cards" style="color:var(--cyan)">Engineering View</a>
+  </div>
+
 </div>
 
 <script>
 let currentRange = '24h';
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
 
 function setActiveButton(range) {
   document.getElementById('btn24h').classList.remove('active');
@@ -1682,7 +1968,50 @@ async function loadLive() {
     document.getElementById('ipNow').textContent = d.ip_address;
     document.getElementById('uptimeNow').textContent = d.uptime;
     document.getElementById('heltecNow').textContent = d.heltec_power;
+
+    document.getElementById('batteryFill').style.width = clamp(d.battery_percent, 0, 100) + '%';
+    document.getElementById('wifiFill').style.width = clamp(d.wifi_percent, 0, 100) + '%';
+    document.getElementById('humFill').style.width = clamp(d.humidity, 0, 100) + '%';
+
+    const solarWidth = clamp((d.solar_power / 1000) * 100, 0, 100);
+    document.getElementById('solarFill').style.width = solarWidth + '%';
+
   } catch(e) {}
+}
+
+function drawMiniChart(id, values, colourClass) {
+  const el = document.getElementById(id);
+
+  if (!el || !values || values.length < 2) {
+    if (el) el.innerHTML = '';
+    return;
+  }
+
+  const w = 300;
+  const h = 76;
+  const pad = 8;
+
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+
+  let points = '';
+
+  values.forEach((v, i) => {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = h - pad - ((v - min) / (max - min)) * (h - pad * 2);
+
+    points += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
+  });
+
+  el.innerHTML =
+    '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+    '<path class="chart-line ' + colourClass + '" d="' + points + '"/>' +
+    '</svg>';
 }
 
 async function loadHistory() {
@@ -1693,6 +2022,8 @@ async function loadHistory() {
     if (!h.ok) {
       document.getElementById('samples').textContent = '0';
       document.getElementById('takeaway1').textContent = h.message || 'No history data available.';
+      document.getElementById('takeaway2').textContent = 'Let the logger collect data, then this panel will fill in.';
+      document.getElementById('takeaway3').textContent = 'Engineering view is still available from /cards.';
       return;
     }
 
@@ -1725,24 +2056,42 @@ async function loadHistory() {
     document.getElementById('wifiMax').textContent = h.wifi_max.toFixed(1);
     document.getElementById('wifiMin').textContent = h.wifi_min.toFixed(1);
 
-    let dirText = '';
+    let maxCount = 1;
+    h.direction_counts.forEach(x => {
+      if (x.count > maxCount) maxCount = x.count;
+    });
+
+    let dirHtml = '';
     h.direction_counts
       .sort((a,b) => b.count - a.count)
-      .slice(0, 5)
+      .slice(0, 6)
       .forEach(x => {
-        dirText += x.dir + ': ' + x.count + ' samples<br>';
+        const w = clamp((x.count / maxCount) * 100, 3, 100);
+        dirHtml += '<div class="dir-row"><strong>' + x.dir + '</strong><div class="dir-bar"><div style="width:' + w + '%"></div></div><span>' + x.count + '</span></div>';
       });
 
-    document.getElementById('dirCounts').innerHTML = dirText || 'No direction data';
+    document.getElementById('dirCounts').innerHTML = dirHtml || 'No direction data';
 
+    drawMiniChart('chart_temp', h.chart_temp, 'orange');
+    drawMiniChart('chart_humidity', h.chart_humidity, 'green');
+    drawMiniChart('chart_pressure', h.chart_pressure, '');
+    drawMiniChart('chart_solar', h.chart_solar, 'yellow');
+    drawMiniChart('chart_battery', h.chart_battery, 'green');
+    drawMiniChart('chart_wind', h.chart_wind, '');
+    drawMiniChart('chart_wifi', h.chart_wifi, 'purple');
+    
     document.getElementById('takeaway1').textContent =
-      'Temperature ranged from ' + h.temp_min.toFixed(1) + '°C to ' + h.temp_max.toFixed(1) + '°C over this period.';
+      'Temperature ranged from ' + h.temp_min.toFixed(1) + '°C to ' + h.temp_max.toFixed(1) +
+      '°C, with an average of ' + h.temp_avg.toFixed(1) + '°C.';
 
     document.getElementById('takeaway2').textContent =
-      'Solar peak was ' + h.solar_power_max.toFixed(0) + ' mW, with average net current of ' + h.net_current_avg.toFixed(1) + ' mA.';
+      'Peak solar output was ' + h.solar_power_max.toFixed(0) +
+      ' mW. Average net current was ' + h.net_current_avg.toFixed(1) + ' mA.';
 
     document.getElementById('takeaway3').textContent =
-      'Pressure trend was ' + h.pressure_trend + ', and Wi-Fi averaged ' + h.wifi_avg.toFixed(1) + '%.';
+      'Pressure was ' + h.pressure_trend +
+      '. Wi-Fi averaged ' + h.wifi_avg.toFixed(1) +
+      '%, with a low of ' + h.wifi_min.toFixed(1) + '%.';
 
   } catch(e) {
     document.getElementById('takeaway1').textContent = 'Failed to load history data.';
