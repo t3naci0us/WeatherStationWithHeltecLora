@@ -710,10 +710,15 @@ void handleHistory() {
     rangeSeconds = 30UL * 24UL * 60UL * 60UL;
   }
 
-  time_t nowTime;
-  time(&nowTime);
+time_t nowTime = 0;
+bool haveTime = false;
 
-  bool haveTime = nowTime > 100000;
+struct tm nowInfo;
+
+if (getLocalTime(&nowInfo, 1000)) {
+  nowTime = mktime(&nowInfo);
+  haveTime = true;
+}
 
   File file = SD.open("/weather.csv", FILE_READ);
 
@@ -755,9 +760,11 @@ void handleHistory() {
 
       double age = difftime(nowTime, rowTime);
 
-      if (age < 0 || age > rangeSeconds) {
-        continue;
-      }
+    // Allow up to 2 hours future tolerance.
+    // This protects against UTC/BST/DST offset oddities.
+    //if (age < -7200 || age > rangeSeconds) {
+    //  rowInRange = false;
+    //}
     }
 
     float temp = getCSVField(line, 1).toFloat();
@@ -1198,7 +1205,9 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
     <div class="card">
       <h2>System Control</h2>
       <div class="small">Restart the ESP32 weather station safely.</div>
-      <button class="btn off" onclick="safeReboot()">Reboot ESP32</button>
+      <button class="btn off" onclick="if(confirm('Reboot ESP32 now?')) fetch('/reboot')">
+  Reboot ESP32
+</button>
       <div class="status">Action: <span id="system_action_status">ready</span></div>
     </div>
 
@@ -1290,26 +1299,39 @@ async function updateData() {
     document.getElementById('heltec_power').textContent =
       d.heltec_power ? d.heltec_power.toUpperCase() : 'UNKNOWN';
 
-    async function safeReboot() {
-      const sure = confirm('Reboot the ESP32 weather station now?');
+async function safeReboot() {
+  const sure = confirm('Reboot the ESP32 weather station now?');
 
-      if (!sure) {
-        return;
-      }
+  if (!sure) {
+    return;
+  }
 
-      try {
-        document.getElementById('system_action_status').textContent = 'rebooting...';
+  try {
+    const res = await fetch('/reboot');
+    const d = await res.json();
 
-        await fetch('/reboot');
+    const status = document.getElementById('system_action_status');
 
-        setTimeout(() => {
-          document.getElementById('system_action_status').textContent =
-            'reboot sent - reconnecting...';
-        }, 1000);
-      } catch (e) {
-        document.getElementById('system_action_status').textContent = 'reboot failed';
-      }
+    if (status) {
+      status.textContent = 'rebooting...';
     }
+
+    setTimeout(() => {
+      if (status) {
+        status.textContent = 'reboot sent - reconnect in a few seconds';
+      }
+    }, 1000);
+
+  } catch (e) {
+    const status = document.getElementById('system_action_status');
+
+    if (status) {
+      status.textContent = 'reboot failed';
+    } else {
+      alert('Reboot command failed.');
+    }
+  }
+}
 
     document.getElementById('low_voltage_status').textContent = d.low_voltage_status;
     document.getElementById('low_voltage_lockout').textContent = d.low_voltage_lockout;
@@ -1793,6 +1815,7 @@ body::before {
       <button id="btn30d" onclick="setRange('30d')">30 Days</button>
       <a href="/cards">Engineering View</a>
       <a href="/download-log">Download CSV</a>
+      <button onclick="safeReboot()">Reboot ESP32</button>
     </div>
   </header>
 
@@ -2012,6 +2035,40 @@ function drawMiniChart(id, values, colourClass) {
     '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
     '<path class="chart-line ' + colourClass + '" d="' + points + '"/>' +
     '</svg>';
+}
+
+async function safeReboot() {
+  const sure = confirm('Reboot the ESP32 weather station now?');
+
+  if (!sure) {
+    return;
+  }
+
+  try {
+    await fetch('/reboot');
+
+    document.body.innerHTML = `
+      <div style="
+        min-height:100vh;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        background:#06111f;
+        color:#70e8ff;
+        font-family:Arial;
+        text-align:center;
+        padding:30px;
+      ">
+        <div>
+          <h1>Rebooting ESP32...</h1>
+          <p>Wait a few seconds, then refresh the page.</p>
+          <p><a href="/" style="color:#70e8ff;">Return to dashboard</a></p>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    alert('Reboot command failed.');
+  }
 }
 
 async function loadHistory() {
