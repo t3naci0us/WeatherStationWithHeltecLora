@@ -1,0 +1,8 @@
+# Local private credentials
+secrets.h
+**/secrets.h
+
+# Optional Arduino/PlatformIO clutter
+.vscode/
+.pio/
+.DS_Store

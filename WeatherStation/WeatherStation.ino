@@ -42,12 +42,13 @@
 #include <SD.h>
 #include <time.h>
 #include <ArduinoOTA.h>
+#include "secrets.h"
 
 // ----------------------------------------------------
 // WIFI SETTINGS
 // ----------------------------------------------------
-const char* WIFI_SSID = "REMOVED_SSID";
-const char* WIFI_PASSWORD = "REMOVED_WIFI_PASSWORD";
+const char* WIFI_SSID = WIFI_SSID;
+const char* WIFI_PASSWORD = WIFI_PASSWORD;
 
 WebServer server(80);
 String latestOTAHostname = "";
@@ -55,7 +56,7 @@ String latestOTAHostname = "";
 // OTA SETTINGS
 // ----------------------------------------------------
 const char* OTA_HOSTNAME = "weatherstation";
-const char* OTA_PASSWORD = "REMOVED_OTA_PASSWORD";
+const char* OTA_PASSWORD = OTA_PASSWORD;
 
 // ----------------------------------------------------
 // LATEST WEATHER DATA FOR WEB DASHBOARD
@@ -1415,22 +1416,132 @@ const char REPORT_PAGE[] PROGMEM = R"rawliteral(
 
 .mini-chart {
   width: 100%;
-  height: 76px;
+  height: 105px;
   margin-top: 12px;
-  border: 1px solid rgba(116,201,255,0.14);
-  border-radius: 12px;
+  border: 1px solid rgba(116,201,255,0.16);
+  border-radius: 14px;
   background:
     linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px),
-    rgba(0,0,0,0.14);
-  background-size: 20px 20px;
+    radial-gradient(circle at 50% 0%, rgba(112,232,255,0.07), transparent 55%),
+    rgba(0,0,0,0.18);
+  background-size: 22px 22px, 22px 22px, auto, auto;
   overflow: hidden;
+  position: relative;
 }
 
 .mini-chart svg {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 6px rgba(112,232,255,0.85));
+}
+
+.chart-area {
+  fill: rgba(112,232,255,0.16);
+}
+
+.chart-line.orange { stroke: var(--orange); }
+.chart-line.green { stroke: var(--green); }
+.chart-line.purple { stroke: var(--purple); }
+.chart-line.yellow { stroke: var(--yellow); }
+.chart-line.red { stroke: var(--red); }
+
+.chart-area.orange { fill: rgba(255,138,35,0.16); }
+.chart-area.green { fill: rgba(141,255,115,0.13); }
+.chart-area.purple { fill: rgba(182,140,255,0.14); }
+.chart-area.yellow { fill: rgba(255,212,71,0.15); }
+.chart-area.red { fill: rgba(255,100,117,0.13); }
+
+.chart-label {
+  position: absolute;
+  right: 8px;
+  top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(116,201,255,0.12);
+  border-radius: 999px;
+  padding: 4px 7px;
+}
+
+.mini-chart svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.condition-banner {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 16px;
+  align-items: center;
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(circle at left, rgba(112,232,255,0.12), transparent 38%),
+    linear-gradient(135deg, rgba(11,29,54,0.94), rgba(5,14,28,0.94));
+  border-radius: 24px;
+  padding: 18px;
+  margin: 14px 0;
+  box-shadow: 0 16px 36px rgba(0,0,0,0.28);
+}
+
+.condition-emoji {
+  font-size: 58px;
+  filter: drop-shadow(0 0 12px rgba(112,232,255,0.35));
+}
+
+.condition-title {
+  font-size: clamp(24px, 5vw, 42px);
+  font-weight: 900;
+  line-height: 1;
+}
+
+.condition-sub {
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.condition-now {
+  text-align: right;
+  font-size: 28px;
+  font-weight: 900;
+  color: var(--cyan);
+}
+
+.status-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.status-chip {
+  border: 1px solid rgba(116,201,255,0.22);
+  background: rgba(255,255,255,0.055);
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 620px) {
+  .condition-banner {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+
+  .condition-now {
+    text-align: center;
+  }
 }
 
 .chart-line {
@@ -1754,6 +1865,73 @@ body::before {
   overflow: hidden;
 }
 
+.compass-wrap {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.compass {
+  width: 140px;
+  height: 140px;
+  border: 2px solid rgba(112,232,255,0.35);
+  border-radius: 50%;
+  position: relative;
+  background:
+    radial-gradient(circle, rgba(112,232,255,0.10), rgba(0,0,0,0.10) 55%, rgba(0,0,0,0.26)),
+    conic-gradient(from 0deg, rgba(112,232,255,0.16), transparent, rgba(112,232,255,0.16));
+  box-shadow: inset 0 0 24px rgba(112,232,255,0.08), 0 0 24px rgba(112,232,255,0.10);
+}
+
+.compass::before {
+  content: "N";
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--cyan);
+  font-weight: 900;
+}
+
+.compass::after {
+  content: "";
+  position: absolute;
+  inset: 18px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 50%;
+}
+
+.needle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 52px;
+  background: linear-gradient(var(--orange), var(--cyan));
+  border-radius: 999px;
+  transform-origin: 50% 95%;
+  transform: translate(-50%, -95%) rotate(0deg);
+  box-shadow: 0 0 10px rgba(112,232,255,0.7);
+}
+
+.compass-centre {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: var(--cyan);
+  border-radius: 50%;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 14px rgba(112,232,255,0.8);
+}
+
+.compass-info {
+  flex: 1;
+  min-width: 160px;
+}
+
 .dir-bar div {
   height: 100%;
   background: linear-gradient(90deg, var(--blue), var(--cyan));
@@ -1809,6 +1987,28 @@ body::before {
       <div class="weather-icon">🌦️</div>
     </div>
 
+    <section class="condition-banner">
+      <div class="condition-emoji" id="conditionEmoji">🌦️</div>
+
+      <div>
+        <div class="condition-title" id="conditionTitle">Live Weather Station</div>
+        <div class="condition-sub" id="conditionSub">
+          Reading current conditions from the ESP32 station.
+        </div>
+
+        <div class="status-chip-row">
+          <div class="status-chip">Battery <strong id="chipBattery">--%</strong></div>
+          <div class="status-chip">Solar <strong id="chipSolar">-- mW</strong></div>
+          <div class="status-chip">Wind <strong id="chipWind">-- mph</strong></div>
+          <div class="status-chip">Wi-Fi <strong id="chipWifi">--%</strong></div>
+        </div>
+      </div>
+
+      <div class="condition-now">
+        <span id="conditionTemp">--</span>°C
+      </div>
+    </section>
+    
     <div class="nav">
       <button id="btn24h" onclick="setRange('24h')" class="active">24 Hours</button>
       <button id="btn7d" onclick="setRange('7d')">7 Days</button>
@@ -1888,14 +2088,26 @@ body::before {
   <section class="section">
     <div class="section-title">💨 3. Wind & Direction</div>
 
-    <div class="grid2">
-      <div class="card">
-        <h2 class="cyan">Wind Now</h2>
+   <div class="card">
+  <h2 class="cyan">Wind Now</h2>
+
+  <div class="compass-wrap">
+      <div class="compass">
+        <div id="windNeedle" class="needle"></div>
+        <div class="compass-centre"></div>
+      </div>
+
+      <div class="compass-info">
         <div class="big"><span id="windNow">--</span><span class="unit">mph</span></div>
-        <div class="stat-line"><span>Max wind</span><strong><span id="windMax">--</span> km/h</strong></div>
-        <div class="stat-line"><span>Peak gust</span><strong><span id="gustMax">--</span> m/s</strong></div>
         <div class="alert">Direction now: <strong id="dirNow">--</strong></div>
       </div>
+    </div>
+
+    <div class="mini-chart" id="chart_wind"></div>
+
+    <div class="stat-line"><span>Max wind</span><strong><span id="windMax">--</span> km/h</strong></div>
+    <div class="stat-line"><span>Peak gust</span><strong><span id="gustMax">--</span> m/s</strong></div>
+  </div>
 
       <div class="card">
         <h2 class="purple">Dominant Directions</h2>
@@ -1985,6 +2197,11 @@ async function loadLive() {
     document.getElementById('windNow').textContent = d.wind_mph.toFixed(1);
     document.getElementById('dirNow').textContent = d.wind_dir;
 
+    if (typeof d.wind_degrees !== 'undefined') {
+      document.getElementById('windNeedle').style.transform =
+        'translate(-50%, -95%) rotate(' + d.wind_degrees + 'deg)';
+    }
+
     document.getElementById('wifiNow').textContent = d.wifi_percent;
     document.getElementById('liveWifi').textContent = d.wifi_percent + '%';
 
@@ -1998,21 +2215,23 @@ async function loadLive() {
 
     const solarWidth = clamp((d.solar_power / 1000) * 100, 0, 100);
     document.getElementById('solarFill').style.width = solarWidth + '%';
+    updateConditionBanner(d);
 
   } catch(e) {}
 }
 
-function drawMiniChart(id, values, colourClass) {
+function drawMiniChart(id, values, colourClass, unit) {
   const el = document.getElementById(id);
 
   if (!el || !values || values.length < 2) {
-    if (el) el.innerHTML = '';
+    if (el) el.innerHTML = '<div class="chart-label">waiting for data</div>';
     return;
   }
 
-  const w = 300;
-  const h = 76;
-  const pad = 8;
+  const w = 320;
+  const h = 105;
+  const padX = 10;
+  const padY = 12;
 
   let min = Math.min(...values);
   let max = Math.max(...values);
@@ -2022,18 +2241,34 @@ function drawMiniChart(id, values, colourClass) {
     max += 1;
   }
 
-  let points = '';
+  let line = '';
+  let area = '';
 
   values.forEach((v, i) => {
-    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
-    const y = h - pad - ((v - min) / (max - min)) * (h - pad * 2);
+    const x = padX + (i / (values.length - 1)) * (w - padX * 2);
+    const y = h - padY - ((v - min) / (max - min)) * (h - padY * 2);
 
-    points += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
+    line += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
+
+    if (i === 0) {
+      area += 'M' + x.toFixed(1) + ' ' + (h - padY).toFixed(1) + ' ';
+      area += 'L' + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
+    } else {
+      area += 'L' + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
+    }
+
+    if (i === values.length - 1) {
+      area += 'L' + x.toFixed(1) + ' ' + (h - padY).toFixed(1) + ' Z';
+    }
   });
 
+  const label = min.toFixed(1) + unit + ' → ' + max.toFixed(1) + unit;
+
   el.innerHTML =
+    '<div class="chart-label">' + label + '</div>' +
     '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
-    '<path class="chart-line ' + colourClass + '" d="' + points + '"/>' +
+      '<path class="chart-area ' + colourClass + '" d="' + area + '"/>' +
+      '<path class="chart-line ' + colourClass + '" d="' + line + '"/>' +
     '</svg>';
 }
 
@@ -2069,6 +2304,40 @@ async function safeReboot() {
   } catch (e) {
     alert('Reboot command failed.');
   }
+}
+
+function updateConditionBanner(d) {
+  let title = 'Live Weather Station';
+  let emoji = '🌦️';
+  let sub = 'Current outdoor conditions from your solar weather station.';
+
+  if (d.lux < 20) {
+    title = 'Night Conditions';
+    emoji = '🌙';
+    sub = 'Low light level detected. Station is running in night conditions.';
+  } else if (d.lux > 15000) {
+    title = 'Bright Sunlight';
+    emoji = '☀️';
+    sub = 'Strong light detected. Good time to check solar charging performance.';
+  } else if (d.wind_mph > 10) {
+    title = 'Breezy Conditions';
+    emoji = '💨';
+    sub = 'Wind speed is elevated compared with calm conditions.';
+  } else if (d.humidity > 85) {
+    title = 'Humid Conditions';
+    emoji = '💧';
+    sub = 'Humidity is high. Watch for condensation around outdoor electronics.';
+  }
+
+  document.getElementById('conditionEmoji').textContent = emoji;
+  document.getElementById('conditionTitle').textContent = title;
+  document.getElementById('conditionSub').textContent = sub;
+  document.getElementById('conditionTemp').textContent = d.temperature.toFixed(1);
+
+  document.getElementById('chipBattery').textContent = d.battery_percent + '%';
+  document.getElementById('chipSolar').textContent = d.solar_power.toFixed(0) + ' mW';
+  document.getElementById('chipWind').textContent = d.wind_mph.toFixed(1) + ' mph';
+  document.getElementById('chipWifi').textContent = d.wifi_percent + '%';
 }
 
 async function loadHistory() {
@@ -2129,13 +2398,13 @@ async function loadHistory() {
 
     document.getElementById('dirCounts').innerHTML = dirHtml || 'No direction data';
 
-    drawMiniChart('chart_temp', h.chart_temp, 'orange');
-    drawMiniChart('chart_humidity', h.chart_humidity, 'green');
-    drawMiniChart('chart_pressure', h.chart_pressure, '');
-    drawMiniChart('chart_solar', h.chart_solar, 'yellow');
-    drawMiniChart('chart_battery', h.chart_battery, 'green');
-    drawMiniChart('chart_wind', h.chart_wind, '');
-    drawMiniChart('chart_wifi', h.chart_wifi, 'purple');
+    drawMiniChart('chart_temp', h.chart_temp, 'orange', '°C');
+    drawMiniChart('chart_humidity', h.chart_humidity, 'green', '%');
+    drawMiniChart('chart_pressure', h.chart_pressure, '', ' hPa');
+    drawMiniChart('chart_solar', h.chart_solar, 'yellow', ' mW');
+    drawMiniChart('chart_battery', h.chart_battery, 'green', '%');
+    drawMiniChart('chart_wind', h.chart_wind, '', ' km/h');
+    drawMiniChart('chart_wifi', h.chart_wifi, 'purple', '%');
     
     document.getElementById('takeaway1').textContent =
       'Temperature ranged from ' + h.temp_min.toFixed(1) + '°C to ' + h.temp_max.toFixed(1) +
