@@ -1936,6 +1936,50 @@ body::before {
   min-width: 160px;
 }
 
+.power-flow {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.flow-box {
+  border: 1px solid rgba(116,201,255,0.18);
+  border-radius: 14px;
+  padding: 12px;
+  text-align: center;
+  background: rgba(255,255,255,0.045);
+}
+
+.flow-icon {
+  font-size: 28px;
+  margin-bottom: 4px;
+}
+
+.flow-arrow {
+  color: var(--cyan);
+  font-size: 28px;
+  font-weight: 900;
+  opacity: 0.85;
+}
+
+.flow-value {
+  color: var(--text);
+  font-weight: 900;
+}
+
+@media (max-width: 720px) {
+  .power-flow {
+    grid-template-columns: 1fr;
+  }
+
+  .flow-arrow {
+    transform: rotate(90deg);
+    text-align: center;
+  }
+}
+
 .dir-bar div {
   height: 100%;
   background: linear-gradient(90deg, var(--blue), var(--cyan));
@@ -2067,6 +2111,31 @@ body::before {
     <div class="section-title">☀️ 2. Light & Power</div>
 
     <div class="grid2">
+
+      <div class="power-flow">
+        <div class="flow-box">
+          <div class="flow-icon">☀️</div>
+          <div class="small">Solar</div>
+          <div class="flow-value"><span id="flowSolar">--</span> mW</div>
+        </div>
+
+        <div class="flow-arrow">→</div>
+
+        <div class="flow-box">
+          <div class="flow-icon">🔋</div>
+          <div class="small">Battery</div>
+          <div class="flow-value"><span id="flowBattery">--</span>%</div>
+        </div>
+
+        <div class="flow-arrow">→</div>
+
+        <div class="flow-box">
+          <div class="flow-icon">📡</div>
+          <div class="small">Station Load</div>
+          <div class="flow-value"><span id="flowLoad">--</span> mW</div>
+        </div>
+      </div>
+
       <div class="card">
         <h2 class="yellow">Light & Solar</h2>
         <div class="big"><span id="solarNow">--</span><span class="unit">mW</span></div>
@@ -2168,23 +2237,6 @@ function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
-const windDirName = d.wind_dir || '--';
-const windDeg = Number(d.wind_deg);
-
-document.getElementById('wind_dir').textContent = windDirName;
-
-const needle = document.getElementById('compassNeedle');
-const compassDegText = document.getElementById('compassDeg');
-
-if (needle && Number.isFinite(windDeg) && windDeg >= 0) {
-  needle.style.transform = `translate(-50%, -100%) rotate(${windDeg}deg)`;
-}
-
-if (compassDegText) {
-  compassDegText.textContent =
-    Number.isFinite(windDeg) && windDeg >= 0 ? `${windDeg.toFixed(0)}°` : '--°';
-}
-
 function setActiveButton(range) {
   document.getElementById('btn24h').classList.remove('active');
   document.getElementById('btn7d').classList.remove('active');
@@ -2237,6 +2289,10 @@ async function loadLive() {
     const solarWidth = clamp((d.solar_power / 1000) * 100, 0, 100);
     document.getElementById('solarFill').style.width = solarWidth + '%';
     updateConditionBanner(d);
+
+    document.getElementById('flowSolar').textContent = d.solar_power.toFixed(0);
+    document.getElementById('flowBattery').textContent = d.battery_percent;
+    document.getElementById('flowLoad').textContent = d.load_power.toFixed(0);
 
   } catch(e) {}
 }
@@ -2402,6 +2458,17 @@ async function loadHistory() {
     document.getElementById('wifiAvg').textContent = h.wifi_avg.toFixed(1);
     document.getElementById('wifiMax').textContent = h.wifi_max.toFixed(1);
     document.getElementById('wifiMin').textContent = h.wifi_min.toFixed(1);
+
+    document.getElementById('windNow').textContent = d.wind_mph.toFixed(1);
+    document.getElementById('dirNow').textContent = d.wind_dir || '--';
+
+    const windDeg = Number(d.wind_deg);
+    const windNeedle = document.getElementById('windNeedle');
+
+    if (windNeedle && Number.isFinite(windDeg) && windDeg >= 0) {
+      windNeedle.style.transform =
+        'translate(-50%, -95%) rotate(' + windDeg + 'deg)';
+    }
 
     let maxCount = 1;
     h.direction_counts.forEach(x => {
