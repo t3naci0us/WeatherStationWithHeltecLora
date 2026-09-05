@@ -580,7 +580,7 @@ void handleReboot() {
 // History Summary
 //------------------------------------
 
-#define HISTORY_CHART_POINTS 80
+#define HISTORY_CHART_POINTS 140
 
 struct HistorySummary {
   String rangeLabel = "unknown";
@@ -828,7 +828,7 @@ if (getLocalTime(&nowInfo, 1000)) {
     }
 
     // Downsample chart points so JSON stays small.
-    if ((validRowsSeen % chartStride == 0) && chart.count < HISTORY_CHART_POINTS) {
+    if ((validRowsSeen == 1 || validRowsSeen % chartStride == 0) && chart.count < HISTORY_CHART_POINTS) {
       chart.temp[chart.count] = temp;
       chart.humidity[chart.count] = hum;
       chart.pressure[chart.count] = pressure;
@@ -1931,6 +1931,68 @@ body::before {
   box-shadow: 0 0 14px rgba(112,232,255,0.8);
 }
 
+.radar-wrap {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 16px;
+  align-items: center;
+}
+
+.radar-box {
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  border: 1px solid rgba(112,232,255,0.28);
+  background:
+    radial-gradient(circle, rgba(112,232,255,0.10), rgba(0,0,0,0.10) 55%, rgba(0,0,0,0.28)),
+    conic-gradient(from 0deg, rgba(112,232,255,0.18), transparent, rgba(112,232,255,0.18));
+  box-shadow:
+    inset 0 0 30px rgba(112,232,255,0.08),
+    0 0 24px rgba(112,232,255,0.12);
+  overflow: hidden;
+}
+
+.radar-box svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.radar-grid {
+  fill: none;
+  stroke: rgba(112,232,255,0.20);
+  stroke-width: 1;
+}
+
+.radar-spoke {
+  stroke: rgba(112,232,255,0.14);
+  stroke-width: 1;
+}
+
+.radar-shape {
+  fill: rgba(112,232,255,0.24);
+  stroke: var(--cyan);
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 6px rgba(112,232,255,0.8));
+}
+
+.radar-label {
+  fill: rgba(230,245,255,0.82);
+  font-size: 9px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: bold;
+}
+
+@media (max-width: 720px) {
+  .radar-wrap {
+    grid-template-columns: 1fr;
+  }
+
+  .radar-box {
+    margin: auto;
+  }
+}
+
 .compass-info {
   flex: 1;
   min-width: 160px;
@@ -2182,10 +2244,14 @@ body::before {
     <div class="stat-line"><span>Peak gust</span><strong><span id="gustMax">--</span> m/s</strong></div>
   </div>
 
-      <div class="card">
-        <h2 class="purple">Dominant Directions</h2>
+    <div class="card">
+      <h2 class="purple">Wind Direction Radar</h2>
+
+      <div class="radar-wrap">
+        <div id="windRadar" class="radar-box"></div>
         <div id="dirCounts" class="direction-list small">No direction data yet</div>
       </div>
+    </div>
     </div>
   </section>
 
@@ -2251,6 +2317,67 @@ async function setRange(range) {
   currentRange = range;
   setActiveButton(range);
   await loadHistory();
+}
+
+function drawWindRadar(counts) {
+  const el = document.getElementById('windRadar');
+  if (!el) return;
+
+  const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+
+  const values = dirs.map(d => {
+    const found = counts && counts.find(x => x.dir === d);
+    return found ? Number(found.count) : 0;
+  });
+
+  const max = Math.max(...values, 1);
+  const cx = 110;
+  const cy = 110;
+  const maxR = 78;
+
+  let points = '';
+  let spokes = '';
+  let labels = '';
+
+  values.forEach((v, i) => {
+    const angleDeg = i * 22.5 - 90;
+    const angle = angleDeg * Math.PI / 180;
+    const r = 10 + (v / max) * maxR;
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
+
+    points += x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+  });
+
+  dirs.forEach((d, i) => {
+    const angleDeg = i * 22.5 - 90;
+    const angle = angleDeg * Math.PI / 180;
+
+    const x1 = cx + Math.cos(angle) * 16;
+    const y1 = cy + Math.sin(angle) * 16;
+    const x2 = cx + Math.cos(angle) * 96;
+    const y2 = cy + Math.sin(angle) * 96;
+
+    spokes += '<line class="radar-spoke" x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '"/>';
+
+    if (i % 2 === 0) {
+      const lx = cx + Math.cos(angle) * 101;
+      const ly = cy + Math.sin(angle) * 101;
+      labels += '<text class="radar-label" text-anchor="middle" x="' + lx + '" y="' + (ly + 3) + '">' + d + '</text>';
+    }
+  });
+
+  el.innerHTML =
+    '<svg viewBox="0 0 220 220">' +
+      '<circle class="radar-grid" cx="110" cy="110" r="26"/>' +
+      '<circle class="radar-grid" cx="110" cy="110" r="52"/>' +
+      '<circle class="radar-grid" cx="110" cy="110" r="78"/>' +
+      '<circle class="radar-grid" cx="110" cy="110" r="96"/>' +
+      spokes +
+      '<polygon class="radar-shape" points="' + points + '"/>' +
+      '<circle cx="110" cy="110" r="4" fill="var(--cyan)"/>' +
+      labels +
+    '</svg>';
 }
 
 async function loadLive() {
@@ -2485,7 +2612,7 @@ async function loadHistory() {
       });
 
     document.getElementById('dirCounts').innerHTML = dirHtml || 'No direction data';
-
+    drawWindRadar(h.direction_counts);
     drawMiniChart('chart_temp', h.chart_temp, 'orange', '°C');
     drawMiniChart('chart_humidity', h.chart_humidity, 'green', '%');
     drawMiniChart('chart_pressure', h.chart_pressure, '', ' hPa');
