@@ -47,16 +47,22 @@
 // ----------------------------------------------------
 // WIFI SETTINGS
 // ----------------------------------------------------
-const char* WIFI_SSID = WIFI_SSID;
-const char* WIFI_PASSWORD = WIFI_PASSWORD;
+const char* WIFI_SSID     = SECRET_WIFI_SSID;
+const char* WIFI_PASSWORD = SECRET_WIFI_PASSWORD;
+
+const char* OTA_USERNAME  = SECRET_OTA_USERNAME;
+const char* OTA_PASSWORD  = SECRET_OTA_PASSWORD;
+const char* OTA_HOSTNAME  = SECRET_OTA_HOSTNAME;
+
+const char* AP_SSID       = SECRET_AP_SSID;
+const char* AP_PASSWORD   = SECRET_AP_PASSWORD;
 
 WebServer server(80);
 String latestOTAHostname = "";
 // ----------------------------------------------------
 // OTA SETTINGS
 // ----------------------------------------------------
-const char* OTA_HOSTNAME = "weatherstation";
-const char* OTA_PASSWORD = OTA_PASSWORD;
+
 
 // ----------------------------------------------------
 // LATEST WEATHER DATA FOR WEB DASHBOARD
@@ -136,8 +142,6 @@ const unsigned long SD_LOG_INTERVAL = 60000; // 60 seconds
 // ----------------------------------------------------
 // WIFI FALLBACK / RECONNECT SETTINGS
 // ----------------------------------------------------
-const char* AP_SSID = "WeatherStation";
-const char* AP_PASSWORD = "REMOVED_OTA_PASSWORD123";
 
 bool fallbackAPActive = false;
 bool wifiWasConnected = false;
@@ -2164,6 +2168,23 @@ function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+const windDirName = d.wind_dir || '--';
+const windDeg = Number(d.wind_deg);
+
+document.getElementById('wind_dir').textContent = windDirName;
+
+const needle = document.getElementById('compassNeedle');
+const compassDegText = document.getElementById('compassDeg');
+
+if (needle && Number.isFinite(windDeg) && windDeg >= 0) {
+  needle.style.transform = `translate(-50%, -100%) rotate(${windDeg}deg)`;
+}
+
+if (compassDegText) {
+  compassDegText.textContent =
+    Number.isFinite(windDeg) && windDeg >= 0 ? `${windDeg.toFixed(0)}°` : '--°';
+}
+
 function setActiveButton(range) {
   document.getElementById('btn24h').classList.remove('active');
   document.getElementById('btn7d').classList.remove('active');
@@ -2197,9 +2218,9 @@ async function loadLive() {
     document.getElementById('windNow').textContent = d.wind_mph.toFixed(1);
     document.getElementById('dirNow').textContent = d.wind_dir;
 
-    if (typeof d.wind_degrees !== 'undefined') {
+    if (typeof d.wind_deg !== 'undefined') {
       document.getElementById('windNeedle').style.transform =
-        'translate(-50%, -95%) rotate(' + d.wind_degrees + 'deg)';
+        'translate(-50%, -95%) rotate(' + d.wind_deg + 'deg)';
     }
 
     document.getElementById('wifiNow').textContent = d.wifi_percent;
