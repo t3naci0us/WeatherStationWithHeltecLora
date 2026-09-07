@@ -580,7 +580,7 @@ void handleReboot() {
 // History Summary
 //------------------------------------
 
-#define HISTORY_CHART_POINTS 140
+#define HISTORY_CHART_POINTS 90
 
 struct HistorySummary {
   String rangeLabel = "unknown";
@@ -777,9 +777,9 @@ if (getLocalTime(&nowInfo, 1000)) {
   int validRowsSeen = 0;
   int chartStride = 1;
 
-  if (range == "24h") chartStride = 1;
-  if (range == "7d") chartStride = 5;
-  if (range == "30d") chartStride = 20;
+  if (range == "24h") chartStride = 10;
+  if (range == "7d") chartStride = 60;
+  if (range == "30d") chartStride = 240;
 
   while (file.available()) {
     String line = file.readStringUntil('\n');
@@ -859,16 +859,45 @@ if (getLocalTime(&nowInfo, 1000)) {
     }
 
     // Downsample chart points so JSON stays small.
-    if ((validRowsSeen == 1 || validRowsSeen % chartStride == 0) && chart.count < HISTORY_CHART_POINTS) {
-      chart.temp[chart.count] = temp;
-      chart.humidity[chart.count] = hum;
-      chart.pressure[chart.count] = pressure;
-      chart.solar[chart.count] = solarPower;
-      chart.battery[chart.count] = battPercent;
-      chart.wind[chart.count] = windKPH;
-      chart.wifi[chart.count] = wifiPercent;
-      chart.labels[chart.count] = makeChartTimeLabel(timestamp, range);
-      chart.count++;
+    if (validRowsSeen == 1 || validRowsSeen % chartStride == 0) {
+
+      // If chart still has room, append normally.
+      if (chart.count < HISTORY_CHART_POINTS) {
+        chart.temp[chart.count] = temp;
+        chart.humidity[chart.count] = hum;
+        chart.pressure[chart.count] = pressure;
+        chart.solar[chart.count] = solarPower;
+        chart.battery[chart.count] = battPercent;
+        chart.wind[chart.count] = windKPH;
+        chart.wifi[chart.count] = wifiPercent;
+        chart.labels[chart.count] = makeChartTimeLabel(timestamp, range);
+        chart.count++;
+      }
+
+      // If chart is full, shift everything left and add newest point at the end.
+      else {
+        for (int i = 1; i < HISTORY_CHART_POINTS; i++) {
+          chart.temp[i - 1] = chart.temp[i];
+          chart.humidity[i - 1] = chart.humidity[i];
+          chart.pressure[i - 1] = chart.pressure[i];
+          chart.solar[i - 1] = chart.solar[i];
+          chart.battery[i - 1] = chart.battery[i];
+          chart.wind[i - 1] = chart.wind[i];
+          chart.wifi[i - 1] = chart.wifi[i];
+          chart.labels[i - 1] = chart.labels[i];
+        }
+
+        int last = HISTORY_CHART_POINTS - 1;
+
+        chart.temp[last] = temp;
+        chart.humidity[last] = hum;
+        chart.pressure[last] = pressure;
+        chart.solar[last] = solarPower;
+        chart.battery[last] = battPercent;
+        chart.wind[last] = windKPH;
+        chart.wifi[last] = wifiPercent;
+        chart.labels[last] = makeChartTimeLabel(timestamp, range);
+      }
     }
 
     if (s.rows % 50 == 0) {
@@ -2170,6 +2199,28 @@ body::before {
     min-height: unset;
   }
 }
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.chart-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(20, 40, 70, 0.92), rgba(9, 24, 44, 0.92));
+}
+
+.chart-card h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--cyan);
+}
+
 </style>
 </head>
 
@@ -2226,7 +2277,7 @@ body::before {
   </div>
 
   <section class="section">
-    <div class="section-title">🌤️ 1. Weather Snapshot</div>
+    <div class="section-title">🌤️ Weather Snapshot</div>
 
     <div class="grid3">
       <div class="card">
@@ -2256,36 +2307,50 @@ body::before {
         <div class="alert">Trend: <strong id="pressureTrend">--</strong></div>
       </div>
     </div>
+      <div class="section-title">💨 Wind & Direction</div>
+
+  <div class="wind-panel-grid">
+
+    <div class="card">
+      <h2 class="cyan">Wind Now</h2>
+
+      <div class="compass-wrap">
+        <div class="compass">
+          <div id="windNeedle" class="needle"></div>
+          <div class="compass-centre"></div>
+        </div>
+
+        <div class="compass-info">
+          <div class="big"><span id="windNow">--</span><span class="unit">mph</span></div>
+          <div class="alert">Direction now: <strong id="dirNow">--</strong></div>
+        </div>
+      </div>
+
+      <div class="stat-line"><span>Max wind</span><strong><span id="windMax">--</span> km/h</strong></div>
+      <div class="stat-line"><span>Peak gust</span><strong><span id="gustMax">--</span> m/s</strong></div>
+      <div class="mini-chart" id="chart_wind"></div>
+    </div>
+
+    <div class="card">
+      <h2 class="purple">Wind Direction Radar</h2>
+
+      <div class="radar-wrap">
+        <div id="windRadar" class="radar-box"></div>
+        <div id="dirCounts" class="direction-list small">No direction data yet</div>
+      </div>
+
+
+    </div>
+
+  </div>
   </section>
 
   <section class="section">
-    <div class="section-title">☀️ 2. Light & Power</div>
+    <div class="section-title">☀️ Light & Power</div>
 
     <div class="grid2">
 
-      <div class="power-flow">
-        <div class="flow-box">
-          <div class="flow-icon">☀️</div>
-          <div class="small">Solar</div>
-          <div class="flow-value"><span id="flowSolar">--</span> mW</div>
-        </div>
 
-        <div class="flow-arrow">→</div>
-
-        <div class="flow-box">
-          <div class="flow-icon">🔋</div>
-          <div class="small">Battery</div>
-          <div class="flow-value"><span id="flowBattery">--</span>%</div>
-        </div>
-
-        <div class="flow-arrow">→</div>
-
-        <div class="flow-box">
-          <div class="flow-icon">📡</div>
-          <div class="small">Station Load</div>
-          <div class="flow-value"><span id="flowLoad">--</span> mW</div>
-        </div>
-      </div>
 
       <div class="card">
         <h2 class="yellow">Light & Solar</h2>
@@ -2310,45 +2375,10 @@ body::before {
     </div>
   </section>
 
-
-<section class="section">
-  <div class="section-title">💨 3. Wind & Direction</div>
-
-  <div class="wind-panel-grid">
-
-    <div class="card">
-      <h2 class="cyan">Wind Now</h2>
-
-      <div class="compass-wrap">
-        <div class="compass">
-          <div id="windNeedle" class="needle"></div>
-          <div class="compass-centre"></div>
-        </div>
-
-        <div class="compass-info">
-          <div class="big"><span id="windNow">--</span><span class="unit">mph</span></div>
-          <div class="alert">Direction now: <strong id="dirNow">--</strong></div>
-        </div>
-      </div>
-
-      <div class="stat-line"><span>Max wind</span><strong><span id="windMax">--</span> km/h</strong></div>
-      <div class="stat-line"><span>Peak gust</span><strong><span id="gustMax">--</span> m/s</strong></div>
-    </div>
-
-    <div class="card">
-      <h2 class="purple">Wind Direction Radar</h2>
-
-      <div class="radar-wrap">
-        <div id="windRadar" class="radar-box"></div>
-        <div id="dirCounts" class="direction-list small">No direction data yet</div>
-      </div>
-    </div>
-
-  </div>
 </section>
 
   <section class="section">
-    <div class="section-title">📶 4. Connectivity & System</div>
+    <div class="section-title">📶 Connectivity & System</div>
 
     <div class="grid2">
       <div class="card">
@@ -2812,9 +2842,13 @@ async function loadHistory() {
       '. Wi-Fi averaged ' + h.wifi_avg.toFixed(1) +
       '%, with a low of ' + h.wifi_min.toFixed(1) + '%.';
 
-  } catch(e) {
-    document.getElementById('takeaway1').textContent = 'Failed to load history data.';
-  }
+    } catch(e) {
+      console.error('loadHistory failed:', e);
+      setText('samples', 'JS err');
+      setText('chartPoints', '0');
+      setText('takeaway1', 'Dashboard JavaScript failed while loading history.');
+      setText('takeaway2', String(e));
+    }
 }
 
 loadLive();
