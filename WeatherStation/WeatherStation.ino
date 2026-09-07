@@ -621,6 +621,8 @@ struct ChartData {
   float wind[HISTORY_CHART_POINTS];
   float wifi[HISTORY_CHART_POINTS];
 
+  String labels[HISTORY_CHART_POINTS];
+
   int count = 0;
 };
 
@@ -693,6 +695,39 @@ String floatArrayJson(float values[], int count, int decimals) {
 
   json += "]";
   return json;
+}
+
+String stringArrayJson(String values[], int count) {
+  String json = "[";
+
+  for (int i = 0; i < count; i++) {
+    if (i > 0) json += ",";
+
+    String safe = values[i];
+    safe.replace("\\", "\\\\");
+    safe.replace("\"", "\\\"");
+
+    json += "\"" + safe + "\"";
+  }
+
+  json += "]";
+  return json;
+}
+
+String makeChartTimeLabel(const String &timestamp, const String &range) {
+  // Expected timestamp: YYYY-MM-DD HH:MM:SS
+  if (timestamp.length() < 16) {
+    return "";
+  }
+
+  String monthDay = timestamp.substring(5, 10);  // MM-DD
+  String hourMin  = timestamp.substring(11, 16); // HH:MM
+
+  if (range == "24h") {
+    return hourMin;
+  }
+
+  return monthDay + " " + hourMin;
 }
 
 //------------------------------------
@@ -836,11 +871,11 @@ if (getLocalTime(&nowInfo, 1000)) {
       chart.battery[chart.count] = battPercent;
       chart.wind[chart.count] = windKPH;
       chart.wifi[chart.count] = wifiPercent;
+      chart.labels[chart.count] = makeChartTimeLabel(timestamp, range);
       chart.count++;
     }
 
     if (s.rows % 50 == 0) {
-      server.handleClient();
       delay(1);
     }
   }
@@ -893,6 +928,8 @@ if (getLocalTime(&nowInfo, 1000)) {
 
   json += "\"net_current_avg\":" + String(netAvg, 2) + ",";
   json += "\"direction_counts\":" + dominantDirectionsJson(s.dirCounts) + ",";
+
+  json += "\"chart_labels\":" + stringArrayJson(chart.labels, chart.count) + ",";
 
   json += "\"chart_temp\":" + floatArrayJson(chart.temp, chart.count, 2) + ",";
   json += "\"chart_humidity\":" + floatArrayJson(chart.humidity, chart.count, 1) + ",";
@@ -1420,7 +1457,7 @@ const char REPORT_PAGE[] PROGMEM = R"rawliteral(
 
 .mini-chart {
   width: 100%;
-  height: 105px;
+  height: 145px;
   margin-top: 12px;
   border: 1px solid rgba(116,201,255,0.16);
   border-radius: 14px;
@@ -1431,7 +1468,6 @@ const char REPORT_PAGE[] PROGMEM = R"rawliteral(
     rgba(0,0,0,0.18);
   background-size: 22px 22px, 22px 22px, auto, auto;
   overflow: hidden;
-  position: relative;
 }
 
 .mini-chart svg {
@@ -1443,7 +1479,7 @@ const char REPORT_PAGE[] PROGMEM = R"rawliteral(
 .chart-line {
   fill: none;
   stroke: var(--cyan);
-  stroke-width: 3.2;
+  stroke-width: 3;
   stroke-linecap: round;
   stroke-linejoin: round;
   filter: drop-shadow(0 0 6px rgba(112,232,255,0.85));
@@ -1562,6 +1598,49 @@ const char REPORT_PAGE[] PROGMEM = R"rawliteral(
 .chart-line.purple { stroke: var(--purple); }
 .chart-line.yellow { stroke: var(--yellow); }
 .chart-line.red { stroke: var(--red); }
+
+.grid-line {
+  stroke: rgba(255,255,255,0.13);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.time-marker {
+  stroke: rgba(112,232,255,0.18);
+  stroke-width: 1;
+  stroke-dasharray: 2 5;
+}
+
+.axis-label {
+  fill: rgba(210,230,255,0.76);
+  font-size: 10px;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.time-label {
+  fill: rgba(210,230,255,0.72);
+  font-size: 9px;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.last-label {
+  fill: var(--cyan);
+  font-weight: bold;
+}
+
+.last-dot {
+  fill: var(--cyan);
+  filter: drop-shadow(0 0 5px rgba(112,232,255,0.9));
+}
+
+.last-dot.orange { fill: var(--orange); }
+.last-dot.green { fill: var(--green); }
+.last-dot.purple { fill: var(--purple); }
+.last-dot.yellow { fill: var(--yellow); }
+
+.point-dot {
+  fill: rgba(255,255,255,0.65);
+}
 
 * {
   box-sizing: border-box;
@@ -2047,6 +2126,19 @@ body::before {
   background: linear-gradient(90deg, var(--blue), var(--cyan));
 }
 
+.wind-panel-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+@media (max-width: 760px) {
+  .wind-panel-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .footer {
   text-align: center;
   color: var(--muted);
@@ -2202,7 +2294,7 @@ body::before {
         <h2 class="yellow">Light & Solar</h2>
         <div class="big"><span id="solarNow">--</span><span class="unit">mW</span></div>
         <div class="meter"><div id="solarFill" class="fill solar"></div></div>
-        <div class="mini-chart" id="chart_battery"></div>
+        
         <div class="mini-chart" id="chart_solar"></div>
         <div class="stat-line"><span>Solar peak</span><strong><span id="solarPeak">--</span> mW</strong></div>
         <div class="stat-line"><span>Light now</span><strong><span id="luxNow">--</span> lux</strong></div>
@@ -2213,6 +2305,7 @@ body::before {
         <h2 class="green">Battery</h2>
         <div class="big"><span id="batteryNow">--</span><span class="unit">%</span></div>
         <div class="meter"><div id="batteryFill" class="fill battery"></div></div>
+        <div class="mini-chart" id="chart_battery"></div>
         <div class="stat-line"><span>Average</span><strong><span id="batteryAvg">--</span>%</strong></div>
         <div class="stat-line"><span>Lowest voltage</span><strong><span id="batteryMin">--</span> V</strong></div>
         <div class="alert">Net current avg: <strong id="netAvg">--</strong> mA</div>
@@ -2223,26 +2316,32 @@ body::before {
   <section class="section">
     <div class="section-title">💨 3. Wind & Direction</div>
 
-   <div class="card">
-  <h2 class="cyan">Wind Now</h2>
+  <div class="card">
+    <h2 class="cyan">Wind Now</h2>
 
-  <div class="compass-wrap">
-      <div class="compass">
-        <div id="windNeedle" class="needle"></div>
-        <div class="compass-centre"></div>
+<section class="section">
+  <div class="section-title">💨 3. Wind & Direction</div>
+
+  <div class="wind-panel-grid">
+
+    <div class="card">
+      <h2 class="cyan">Wind Now</h2>
+
+      <div class="compass-wrap">
+        <div class="compass">
+          <div id="windNeedle" class="needle"></div>
+          <div class="compass-centre"></div>
+        </div>
+
+        <div class="compass-info">
+          <div class="big"><span id="windNow">--</span><span class="unit">mph</span></div>
+          <div class="alert">Direction now: <strong id="dirNow">--</strong></div>
+        </div>
       </div>
 
-      <div class="compass-info">
-        <div class="big"><span id="windNow">--</span><span class="unit">mph</span></div>
-        <div class="alert">Direction now: <strong id="dirNow">--</strong></div>
-      </div>
+      <div class="stat-line"><span>Max wind</span><strong><span id="windMax">--</span> km/h</strong></div>
+      <div class="stat-line"><span>Peak gust</span><strong><span id="gustMax">--</span> m/s</strong></div>
     </div>
-
-    <div class="mini-chart" id="chart_wind"></div>
-
-    <div class="stat-line"><span>Max wind</span><strong><span id="windMax">--</span> km/h</strong></div>
-    <div class="stat-line"><span>Peak gust</span><strong><span id="gustMax">--</span> m/s</strong></div>
-  </div>
 
     <div class="card">
       <h2 class="purple">Wind Direction Radar</h2>
@@ -2252,8 +2351,9 @@ body::before {
         <div id="dirCounts" class="direction-list small">No direction data yet</div>
       </div>
     </div>
-    </div>
-  </section>
+
+  </div>
+</section>
 
   <section class="section">
     <div class="section-title">📶 4. Connectivity & System</div>
@@ -2424,55 +2524,142 @@ async function loadLive() {
   } catch(e) {}
 }
 
-function drawMiniChart(id, values, colourClass, unit) {
+function drawMiniChart(id, values, labels, colourClass, unit) {
   const el = document.getElementById(id);
 
-  if (!el || !values || values.length < 2) {
-    if (el) el.innerHTML = '<div class="chart-label">waiting for data</div>';
+  if (!el) return;
+
+  if (!values || !Array.isArray(values)) {
+    el.innerHTML = '<div class="chart-label">no chart data</div>';
     return;
   }
 
-  const w = 320;
-  const h = 105;
-  const padX = 10;
-  const padY = 12;
+  values = values.map(Number).filter(v => !isNaN(v));
+
+  if (values.length < 2) {
+    el.innerHTML = '<div class="chart-label">not enough chart data</div>';
+    return;
+  }
+
+  if (!labels || !Array.isArray(labels)) {
+    labels = [];
+  }
+
+  const w = 380;
+  const h = 145;
+
+  const leftPad = 52;
+  const rightPad = 54;
+  const topPad = 16;
+  const bottomPad = 34;
 
   let min = Math.min(...values);
   let max = Math.max(...values);
+  const last = values[values.length - 1];
 
   if (min === max) {
     min -= 1;
     max += 1;
   }
 
+  const chartW = w - leftPad - rightPad;
+  const chartH = h - topPad - bottomPad;
+
+  function xFor(i) {
+    return leftPad + (i / (values.length - 1)) * chartW;
+  }
+
+  function yFor(v) {
+    return topPad + (1 - ((v - min) / (max - min))) * chartH;
+  }
+
   let line = '';
   let area = '';
+  let dots = '';
 
   values.forEach((v, i) => {
-    const x = padX + (i / (values.length - 1)) * (w - padX * 2);
-    const y = h - padY - ((v - min) / (max - min)) * (h - padY * 2);
+    const x = xFor(i);
+    const y = yFor(v);
 
     line += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
 
     if (i === 0) {
-      area += 'M' + x.toFixed(1) + ' ' + (h - padY).toFixed(1) + ' ';
+      area += 'M' + x.toFixed(1) + ' ' + (h - bottomPad).toFixed(1) + ' ';
       area += 'L' + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
     } else {
       area += 'L' + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
     }
 
     if (i === values.length - 1) {
-      area += 'L' + x.toFixed(1) + ' ' + (h - padY).toFixed(1) + ' Z';
+      area += 'L' + x.toFixed(1) + ' ' + (h - bottomPad).toFixed(1) + ' Z';
+    }
+
+    // Plot small point markers, but not too many.
+    if (values.length <= 40 || i % Math.ceil(values.length / 40) === 0) {
+      dots += '<circle class="point-dot" cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="1.6"/>';
     }
   });
 
-  const label = min.toFixed(1) + unit + ' → ' + max.toFixed(1) + unit;
+  const mid = (min + max) / 2;
+
+  const yMax = yFor(max);
+  const yMid = yFor(mid);
+  const yMin = yFor(min);
+
+  const lastX = xFor(values.length - 1);
+  const lastY = yFor(last);
+
+  let timeMarkers = '';
+  let timeLabels = '';
+
+  const tickIndexes = [];
+
+  tickIndexes.push(0);
+
+  if (values.length > 4) {
+    tickIndexes.push(Math.floor((values.length - 1) * 0.25));
+    tickIndexes.push(Math.floor((values.length - 1) * 0.50));
+    tickIndexes.push(Math.floor((values.length - 1) * 0.75));
+  }
+
+  tickIndexes.push(values.length - 1);
+
+  const uniqueTicks = [...new Set(tickIndexes)];
+
+  uniqueTicks.forEach((idx) => {
+    const x = xFor(idx);
+    const label = labels[idx] || '';
+
+    timeMarkers +=
+      '<line x1="' + x.toFixed(1) + '" y1="' + topPad + '" x2="' + x.toFixed(1) + '" y2="' + (h - bottomPad) + '" class="time-marker"/>';
+
+    timeLabels +=
+      '<text x="' + x.toFixed(1) + '" y="' + (h - 9) + '" text-anchor="middle" class="time-label">' + label + '</text>';
+  });
 
   el.innerHTML =
-    '<div class="chart-label">' + label + '</div>' +
     '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+
+      '<line x1="' + leftPad + '" y1="' + yMax.toFixed(1) + '" x2="' + (w - rightPad) + '" y2="' + yMax.toFixed(1) + '" class="grid-line"/>' +
+      '<line x1="' + leftPad + '" y1="' + yMid.toFixed(1) + '" x2="' + (w - rightPad) + '" y2="' + yMid.toFixed(1) + '" class="grid-line"/>' +
+      '<line x1="' + leftPad + '" y1="' + yMin.toFixed(1) + '" x2="' + (w - rightPad) + '" y2="' + yMin.toFixed(1) + '" class="grid-line"/>' +
+
+      timeMarkers +
+
+      '<text x="5" y="' + (yMax + 4).toFixed(1) + '" class="axis-label">' + max.toFixed(1) + unit + '</text>' +
+      '<text x="5" y="' + (yMid + 4).toFixed(1) + '" class="axis-label">' + mid.toFixed(1) + unit + '</text>' +
+      '<text x="5" y="' + (yMin + 4).toFixed(1) + '" class="axis-label">' + min.toFixed(1) + unit + '</text>' +
+
       '<path class="chart-area ' + colourClass + '" d="' + area + '"/>' +
       '<path class="chart-line ' + colourClass + '" d="' + line + '"/>' +
+
+      dots +
+
+      '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="4" class="last-dot ' + colourClass + '"/>' +
+      '<text x="' + (w - rightPad + 7) + '" y="' + (lastY + 4).toFixed(1) + '" class="axis-label last-label">' + last.toFixed(1) + unit + '</text>' +
+
+      timeLabels +
+
     '</svg>';
 }
 
@@ -2586,16 +2773,7 @@ async function loadHistory() {
     document.getElementById('wifiMax').textContent = h.wifi_max.toFixed(1);
     document.getElementById('wifiMin').textContent = h.wifi_min.toFixed(1);
 
-    document.getElementById('windNow').textContent = d.wind_mph.toFixed(1);
-    document.getElementById('dirNow').textContent = d.wind_dir || '--';
 
-    const windDeg = Number(d.wind_deg);
-    const windNeedle = document.getElementById('windNeedle');
-
-    if (windNeedle && Number.isFinite(windDeg) && windDeg >= 0) {
-      windNeedle.style.transform =
-        'translate(-50%, -95%) rotate(' + windDeg + 'deg)';
-    }
 
     let maxCount = 1;
     h.direction_counts.forEach(x => {
@@ -2613,13 +2791,14 @@ async function loadHistory() {
 
     document.getElementById('dirCounts').innerHTML = dirHtml || 'No direction data';
     drawWindRadar(h.direction_counts);
-    drawMiniChart('chart_temp', h.chart_temp, 'orange', '°C');
-    drawMiniChart('chart_humidity', h.chart_humidity, 'green', '%');
-    drawMiniChart('chart_pressure', h.chart_pressure, '', ' hPa');
-    drawMiniChart('chart_solar', h.chart_solar, 'yellow', ' mW');
-    drawMiniChart('chart_battery', h.chart_battery, 'green', '%');
-    drawMiniChart('chart_wind', h.chart_wind, '', ' km/h');
-    drawMiniChart('chart_wifi', h.chart_wifi, 'purple', '%');
+    
+    drawMiniChart('chart_temp', h.chart_temp, h.chart_labels, 'orange', '°C');
+    drawMiniChart('chart_humidity', h.chart_humidity, h.chart_labels, 'green', '%');
+    drawMiniChart('chart_pressure', h.chart_pressure, h.chart_labels, '', ' hPa');
+    drawMiniChart('chart_solar', h.chart_solar, h.chart_labels, 'yellow', ' mW');
+    drawMiniChart('chart_battery', h.chart_battery, h.chart_labels, 'green', '%');
+    drawMiniChart('chart_wind', h.chart_wind, h.chart_labels, '', ' km/h');
+    drawMiniChart('chart_wifi', h.chart_wifi, h.chart_labels, 'purple', '%');
     
     document.getElementById('takeaway1').textContent =
       'Temperature ranged from ' + h.temp_min.toFixed(1) + '°C to ' + h.temp_max.toFixed(1) +
