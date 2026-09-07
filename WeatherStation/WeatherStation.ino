@@ -800,11 +800,7 @@ if (getLocalTime(&nowInfo, 1000)) {
 
       double age = difftime(nowTime, rowTime);
 
-    // Allow up to 2 hours future tolerance.
-    // This protects against UTC/BST/DST offset oddities.
-    //if (age < -7200 || age > rangeSeconds) {
-    //  rowInRange = false;
-    //}
+
     }
 
     float temp = getCSVField(line, 1).toFloat();
@@ -2223,6 +2219,7 @@ body::before {
 
   <div class="top-stats">
     <div class="pill"><strong id="samples">--</strong><span>samples in range</span></div>
+    <div class="pill"><strong id="chartPoints">--</strong><span>chart points</span></div>
     <div class="pill"><strong id="rangeLabel">24h</strong><span>selected range</span></div>
     <div class="pill"><strong id="liveBattery">--%</strong><span>battery now</span></div>
     <div class="pill"><strong id="liveWifi">--%</strong><span>Wi-Fi now</span></div>
@@ -2313,11 +2310,6 @@ body::before {
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-title">💨 3. Wind & Direction</div>
-
-  <div class="card">
-    <h2 class="cyan">Wind Now</h2>
 
 <section class="section">
   <div class="section-title">💨 3. Wind & Direction</div>
@@ -2397,6 +2389,12 @@ body::before {
 </div>
 
 <script>
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
 let currentRange = '24h';
 
 function clamp(n, min, max) {
@@ -2744,8 +2742,9 @@ async function loadHistory() {
       return;
     }
 
-    document.getElementById('samples').textContent = h.rows;
-    document.getElementById('rangeLabel').textContent = h.range;
+    setText('samples', h.rows);
+    setText('rangeLabel', h.range);
+    setText('chartPoints', h.chart_temp ? h.chart_temp.length : 0);
 
     document.getElementById('tempAvg').textContent = h.temp_avg.toFixed(1);
     document.getElementById('tempMin').textContent = h.temp_min.toFixed(1);
@@ -2791,7 +2790,7 @@ async function loadHistory() {
 
     document.getElementById('dirCounts').innerHTML = dirHtml || 'No direction data';
     drawWindRadar(h.direction_counts);
-    
+
     drawMiniChart('chart_temp', h.chart_temp, h.chart_labels, 'orange', '°C');
     drawMiniChart('chart_humidity', h.chart_humidity, h.chart_labels, 'green', '%');
     drawMiniChart('chart_pressure', h.chart_pressure, h.chart_labels, '', ' hPa');
