@@ -180,6 +180,16 @@ bool sdOK = false;
 #define TEMP_CALIBRATION_OFFSET -4
 
 // ----------------------------------------------------
+// RAIN SENSOR
+// ----------------------------------------------------
+#define RAIN_PWR 26
+#define RAIN_ADC 35
+
+int latestRainRaw = 4095;
+int latestRainPercent = 0;
+String latestRainStatus = "Dry";
+
+// ----------------------------------------------------
 // BATTERY ADC
 // ----------------------------------------------------
 #define BATTERY_ADC_PIN 34
@@ -479,6 +489,65 @@ void setupWindSensors() {
 
   Serial.println("Wind speed RS485 ready on RX16 / TX17 / DE4.");
   Serial.println("Wind direction RS485 ready on RX33 / TX32 / DE27.");
+}
+
+// ----------------------------------------------------
+// Read rain sensor
+// ----------------------------------------------------
+void readRainSensor() {
+
+  // Power sensor only while taking a measurement
+  digitalWrite(RAIN_PWR, HIGH);
+
+  // Let voltage settle
+  delay(20);
+
+  // Take several readings and average them
+  long total = 0;
+
+  for (int i = 0; i < 8; i++) {
+    total += analogRead(RAIN_ADC);
+    delay(2);
+  }
+
+  latestRainRaw = total / 8;
+
+  // Turn sensor off again to reduce corrosion
+  digitalWrite(RAIN_PWR, LOW);
+
+
+  // ------------------------------------------------
+  // Temporary calibration values
+  // Adjust these after we see your real readings
+  // ------------------------------------------------
+
+  const int RAIN_DRY_VALUE = 4000;
+  const int RAIN_WET_VALUE = 500;
+
+  latestRainPercent = map(
+    latestRainRaw,
+    RAIN_DRY_VALUE,
+    RAIN_WET_VALUE,
+    0,
+    100
+  );
+
+  latestRainPercent = constrain(latestRainPercent, 0, 100);
+
+
+  // Simple status
+  if (latestRainPercent < 10) {
+    latestRainStatus = "Dry";
+  }
+  else if (latestRainPercent < 30) {
+    latestRainStatus = "Damp";
+  }
+  else if (latestRainPercent < 60) {
+    latestRainStatus = "Light Rain";
+  }
+  else {
+    latestRainStatus = "Wet";
+  }
 }
 
 // ----------------------------------------------------
@@ -1134,6 +1203,37 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       padding: 18px;
       font-size: 13px;
     }
+    .tabs {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 14px 14px 0;
+}
+
+.tab-btn {
+  border: 1px solid #2d374c;
+  background: #171d2a;
+  color: #b8c4d6;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.tab-btn.active {
+  background: #8be9fd;
+  color: #10131a;
+  border-color: #8be9fd;
+}
+
+.tab-page {
+  display: none;
+}
+
+.tab-page.active {
+  display: grid;
+}
   </style>
 </head>
 <body>
@@ -1145,7 +1245,21 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
 </div>
   </header>
 
-  <main class="grid">
+<div class="tabs">
+  <button id="tabOverviewBtn"
+          class="tab-btn active"
+          onclick="showTab('overview')">
+    Overview
+  </button>
+
+  <button id="tabRainBtn"
+          class="tab-btn"
+          onclick="showTab('rain')">
+    Rain Sensor Raw
+  </button>
+</div>
+
+  <main id="overviewTab" class="grid tab-page active">
     <div class="card">
       <h2>Temperature</h2>
       <div class="value"><span id="temperature">--</span><span class="unit">°C</span></div>
@@ -1283,6 +1397,72 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
 
   </main>
 
+  <main id="rainTab" class="grid tab-page">
+
+  <div class="card">
+    <h2>Rain Sensor Raw ADC</h2>
+
+    <div class="value">
+      <span id="rain_raw">--</span>
+    </div>
+
+    <div class="small">
+      ESP32 ADC1 · GPIO35
+    </div>
+
+    <div class="status">
+      Raw ADC range: 0 - 4095
+    </div>
+  </div>
+
+
+  <div class="card">
+    <h2>Rain Sensor Level</h2>
+
+    <div class="value">
+      <span id="rain_percent">--</span>
+      <span class="unit">%</span>
+    </div>
+
+    <div class="small">
+      Calculated wetness
+    </div>
+
+    <div class="status">
+      Status: <span id="rain_status">--</span>
+    </div>
+  </div>
+
+
+  <div class="card">
+    <h2>Rain Sensor Hardware</h2>
+
+    <div class="small">
+      ADC input: <strong>GPIO35</strong><br>
+      Sensor power: <strong>GPIO26</strong><br>
+      Series resistor: <strong>100 kΩ</strong><br>
+      Measurement power: <strong>Pulsed</strong>
+    </div>
+  </div>
+
+
+  <div class="card">
+    <h2>Calibration</h2>
+
+    <div class="small">
+      Dry ADC:
+      <strong id="rain_cal_dry">4000</strong><br>
+
+      Wet ADC:
+      <strong id="rain_cal_wet">500</strong>
+    </div>
+
+    <div class="status">
+      Use this page while testing drops of water on the plate.
+    </div>
+  </div>
+
+</main>
   <footer>
     Last update: <span id="last_update">--</span>
   </footer>
@@ -1365,6 +1545,15 @@ async function updateData() {
 
     document.getElementById('ota_hostname').textContent = d.ota_hostname;
 
+    document.getElementById('rain_raw').textContent =
+    d.rain_raw !== undefined ? d.rain_raw : '--';
+
+  document.getElementById('rain_percent').textContent =
+    d.rain_percent !== undefined ? d.rain_percent : '--';
+
+  document.getElementById('rain_status').textContent =
+    d.rain_status !== undefined ? d.rain_status : '--';
+
     document.getElementById('heltec_power').textContent =
       d.heltec_power ? d.heltec_power.toUpperCase() : 'UNKNOWN';
 
@@ -1442,6 +1631,28 @@ async function clearLog() {
     updateData();
   } catch (e) {
     document.getElementById('log_action_status').textContent = 'clear failed';
+  }
+}
+function showTab(tab) {
+
+  const overview = document.getElementById('overviewTab');
+  const rain = document.getElementById('rainTab');
+
+  const overviewBtn = document.getElementById('tabOverviewBtn');
+  const rainBtn = document.getElementById('tabRainBtn');
+
+  overview.classList.remove('active');
+  rain.classList.remove('active');
+
+  overviewBtn.classList.remove('active');
+  rainBtn.classList.remove('active');
+
+  if (tab === 'rain') {
+    rain.classList.add('active');
+    rainBtn.classList.add('active');
+  } else {
+    overview.classList.add('active');
+    overviewBtn.classList.add('active');
   }
 }
 updateData();
@@ -2934,6 +3145,10 @@ void handleData() {
   json += "\"heltec_requested\":\"" + String(heltecRequestedOn ? "on" : "off") + "\",";
   json += "\"heltec_protection\":\"" + latestHeltecProtection + "\",";
 
+  json += "\"rain_raw\":" + String(latestRainRaw) + ",";
+  json += "\"rain_percent\":" + String(latestRainPercent) + ",";
+  json += "\"rain_status\":\"" + latestRainStatus + "\",";
+
   json += "\"heltec_power\":\"" + String(heltecPowerOn ? "on" : "off") + "\"";
   json += "}";
 
@@ -3124,6 +3339,9 @@ void updateWeatherData() {
   latestBatteryVoltage = readBatteryVoltage();
   latestBatteryPercent = batteryPercentFromVoltage(latestBatteryVoltage);
   maintainLowVoltageProtection();
+
+  // Rain Sensor
+  readRainSensor();
 
   // BME280
   if (bmeOK) {
@@ -3611,6 +3829,11 @@ void setup() {
 
   scanI2C();
 
+  pinMode(RAIN_PWR, OUTPUT);
+  digitalWrite(RAIN_PWR, LOW);
+
+  pinMode(RAIN_ADC, INPUT);
+  
   setupBME280();
   setupBH1750();
   setupINA219();
@@ -3823,6 +4046,15 @@ void loop() {
     Serial.print(heltecPowerOn ? "ON" : "OFF");
     Serial.print(" | Requested: ");
     Serial.println(heltecRequestedOn ? "ON" : "OFF");
+    Serial.print("Rain Raw: ");
+    Serial.print(latestRainRaw);
+
+    Serial.print(" | Rain: ");
+    Serial.print(latestRainPercent);
+    Serial.print("%");
+
+    Serial.print(" | Status: ");
+    Serial.println(latestRainStatus);
 
     Serial.println("==================================");
   }
