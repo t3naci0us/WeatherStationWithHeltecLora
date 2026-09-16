@@ -177,6 +177,8 @@ String latestWiFiMode = "unknown";
 
 bool sdOK = false;
 
+#define TEMP_CALIBRATION_OFFSET -4
+
 // ----------------------------------------------------
 // BATTERY ADC
 // ----------------------------------------------------
@@ -3125,7 +3127,7 @@ void updateWeatherData() {
 
   // BME280
   if (bmeOK) {
-    latestTemperature = bme.readTemperature();
+    latestTemperature = bme.readTemperature() + TEMP_CALIBRATION_OFFSET;
     latestHumidity = bme.readHumidity();
     latestPressure = bme.readPressure() / 100.0F;
     latestBmeOK = true;
