@@ -176,6 +176,12 @@ String latestWiFiMode = "unknown";
 #define SD_SCK  18
 
 bool sdOK = false;
+bool sdLogReady = false;
+String sdLogError = "not initialized";
+unsigned long lastSDMountAttempt = 0;
+unsigned long lastBMEAttempt = 0;
+const unsigned long DEVICE_RETRY_INTERVAL = 30000;
+uint8_t bmeAddress = 0;
 
 #define TEMP_CALIBRATION_OFFSET -4
 
@@ -404,23 +410,29 @@ void scanI2C() {
 // Start BME280
 // ----------------------------------------------------
 void setupBME280() {
+  lastBMEAttempt = millis();
   Serial.println();
   Serial.println("Starting BME280...");
 
   if (bme.begin(0x76)) {
     bmeOK = true;
+    bmeAddress = 0x76;
     Serial.println("BME280 found at 0x76.");
     return;
   }
 
   if (bme.begin(0x77)) {
     bmeOK = true;
+    bmeAddress = 0x77;
     Serial.println("BME280 found at 0x77.");
     return;
   }
 
   bmeOK = false;
+  latestBmeOK = false;
+  bmeAddress = 0;
   Serial.println("BME280 not found at 0x76 or 0x77.");
+  Serial.println("Check SDA=21, SCL=22 and sensor power. Retrying in 30 seconds.");
 }
 
 // ----------------------------------------------------
@@ -679,6 +691,9 @@ struct HistorySummary {
   float wifiMax = -9999;
   float wifiSum = 0;
   float netCurrentSum = 0;
+  int rainRows = 0;
+  float rainSum = 0;
+  float rainMax = 0;
 
   int dirCounts[16] = {0};
 };
@@ -691,6 +706,7 @@ struct ChartData {
   float battery[HISTORY_CHART_POINTS];
   float wind[HISTORY_CHART_POINTS];
   float wifi[HISTORY_CHART_POINTS];
+  float rain[HISTORY_CHART_POINTS];
 
   String labels[HISTORY_CHART_POINTS];
 
@@ -761,7 +777,7 @@ String floatArrayJson(float values[], int count, int decimals) {
 
   for (int i = 0; i < count; i++) {
     if (i > 0) json += ",";
-    json += String(values[i], decimals);
+    json += isnan(values[i]) ? String("null") : String(values[i], decimals);
   }
 
   json += "]";
@@ -870,7 +886,7 @@ if (getLocalTime(&nowInfo, 1000)) {
       if (rowTime == 0) continue;
 
       double age = difftime(nowTime, rowTime);
-
+      if (age < 0 || age > rangeSeconds) continue;
 
     }
 
@@ -886,6 +902,13 @@ if (getLocalTime(&nowInfo, 1000)) {
     float gustMS = getCSVField(line, 19).toFloat();
     String windDir = getCSVField(line, 20);
     float wifiPercent = getCSVField(line, 23).toFloat();
+    String rainField = getCSVField(line, 26);
+    float rainPercent = rainField.length() ? rainField.toFloat() : NAN;
+    if (!isnan(rainPercent)) {
+      s.rainRows++;
+      s.rainSum += rainPercent;
+      if (rainPercent > s.rainMax) s.rainMax = rainPercent;
+    }
 
     s.rows++;
     validRowsSeen++;
@@ -930,7 +953,7 @@ if (getLocalTime(&nowInfo, 1000)) {
     }
 
     // Downsample chart points so JSON stays small.
-    if (validRowsSeen == 1 || validRowsSeen % chartStride == 0) {
+    if (validRowsSeen == 1 || validRowsSeen % chartStride == 0 || !file.available()) {
 
       // If chart still has room, append normally.
       if (chart.count < HISTORY_CHART_POINTS) {
@@ -941,6 +964,7 @@ if (getLocalTime(&nowInfo, 1000)) {
         chart.battery[chart.count] = battPercent;
         chart.wind[chart.count] = windKPH;
         chart.wifi[chart.count] = wifiPercent;
+        chart.rain[chart.count] = rainPercent;
         chart.labels[chart.count] = makeChartTimeLabel(timestamp, range);
         chart.count++;
       }
@@ -955,6 +979,7 @@ if (getLocalTime(&nowInfo, 1000)) {
           chart.battery[i - 1] = chart.battery[i];
           chart.wind[i - 1] = chart.wind[i];
           chart.wifi[i - 1] = chart.wifi[i];
+          chart.rain[i - 1] = chart.rain[i];
           chart.labels[i - 1] = chart.labels[i];
         }
 
@@ -967,6 +992,7 @@ if (getLocalTime(&nowInfo, 1000)) {
         chart.battery[last] = battPercent;
         chart.wind[last] = windKPH;
         chart.wifi[last] = wifiPercent;
+        chart.rain[last] = rainPercent;
         chart.labels[last] = makeChartTimeLabel(timestamp, range);
       }
     }
@@ -1026,6 +1052,10 @@ if (getLocalTime(&nowInfo, 1000)) {
   json += "\"direction_counts\":" + dominantDirectionsJson(s.dirCounts) + ",";
 
   json += "\"chart_labels\":" + stringArrayJson(chart.labels, chart.count) + ",";
+  json += "\"rain_rows\":" + String(s.rainRows) + ",";
+  json += "\"rain_avg\":" + (s.rainRows ? String(s.rainSum / s.rainRows, 1) : String("null")) + ",";
+  json += "\"rain_max\":" + (s.rainRows ? String(s.rainMax, 0) : String("null")) + ",";
+  json += "\"chart_rain\":" + floatArrayJson(chart.rain, chart.count, 0) + ",";
 
   json += "\"chart_temp\":" + floatArrayJson(chart.temp, chart.count, 2) + ",";
   json += "\"chart_humidity\":" + floatArrayJson(chart.humidity, chart.count, 1) + ",";
@@ -1363,6 +1393,7 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
       <div class="small">Wind Speed: <span id="status_wind_speed">--</span></div>
       <div class="small">Wind Direction: <span id="status_wind_dir">--</span></div>
       <div class="small">SD Logging: <span id="status_sd">--</span></div>
+      <div class="small">SD detail: <span id="sd_detail">--</span></div>
     </div>
     <div class="card">
       <h2>System Health</h2>
@@ -1533,6 +1564,7 @@ async function updateData() {
     document.getElementById('status_wind_speed').textContent = d.status_wind_speed;
     document.getElementById('status_wind_dir').textContent = d.status_wind_dir;
     document.getElementById('status_sd').textContent = d.status_sd;
+    document.getElementById('sd_detail').textContent = d.sd_detail || 'Ready';
 
     document.getElementById('uptime').textContent = d.uptime;
     document.getElementById('free_heap').textContent = d.free_heap;
@@ -2512,6 +2544,17 @@ body::before {
       </div>
 
       <div class="card">
+        <h2 class="cyan">Rain Sensor</h2>
+        <div class="big"><span id="rainNow">--</span><span class="unit">% wetness</span></div>
+        <div class="alert">Status: <strong id="rainStatus">--</strong></div>
+        <div class="mini-chart" id="chart_rain"><div class="chart-label">Waiting for rain history</div></div>
+        <div class="stat-line"><span>Average wetness</span><strong id="rainAvg">--</strong></div>
+        <div class="stat-line"><span>Peak wetness</span><strong id="rainMax">--</strong></div>
+        <div class="stat-line"><span>Raw ADC</span><strong id="rainRaw">--</strong></div>
+        <div class="small">Surface wetness, not rainfall depth. Uses the sensor calibration in Engineering.</div>
+      </div>
+
+      <div class="card">
         <h2 class="cyan">Pressure</h2>
         <div class="big"><span id="pressureNow">--</span><span class="unit">hPa</span></div>
         <div class="mini-chart" id="chart_pressure"></div>
@@ -2727,6 +2770,9 @@ async function loadLive() {
     const d = await res.json();
 
     document.getElementById('tempNow').textContent = d.temperature.toFixed(1);
+    setText('rainNow', d.rain_percent ?? '--');
+    setText('rainStatus', d.rain_status ?? '--');
+    setText('rainRaw', d.rain_raw ?? '--');
     document.getElementById('humNow').textContent = d.humidity.toFixed(1);
     document.getElementById('pressureNow').textContent = d.pressure.toFixed(1);
     document.getElementById('luxNow').textContent = d.lux.toFixed(0);
@@ -2775,9 +2821,10 @@ function drawMiniChart(id, values, labels, colourClass, unit) {
     return;
   }
 
-  values = values.map(Number).filter(v => !isNaN(v));
+  values = values.map(v => v === null || v === '' ? null : Number(v));
+  const validValues = values.filter(v => v !== null && Number.isFinite(v));
 
-  if (values.length < 2) {
+  if (!validValues.length) {
     el.innerHTML = '<div class="chart-label">not enough chart data</div>';
     return;
   }
@@ -2794,9 +2841,10 @@ function drawMiniChart(id, values, labels, colourClass, unit) {
   const topPad = 16;
   const bottomPad = 34;
 
-  let min = Math.min(...values);
-  let max = Math.max(...values);
-  const last = values[values.length - 1];
+  let min = id === 'chart_rain' ? 0 : Math.min(...validValues);
+  let max = id === 'chart_rain' ? 100 : Math.max(...validValues);
+  const lastIndex = values.findLastIndex(v => v !== null && Number.isFinite(v));
+  const last = values[lastIndex];
 
   if (min === max) {
     min -= 1;
@@ -2807,7 +2855,7 @@ function drawMiniChart(id, values, labels, colourClass, unit) {
   const chartH = h - topPad - bottomPad;
 
   function xFor(i) {
-    return leftPad + (i / (values.length - 1)) * chartW;
+    return leftPad + (i / Math.max(1, values.length - 1)) * chartW;
   }
 
   function yFor(v) {
@@ -2819,19 +2867,22 @@ function drawMiniChart(id, values, labels, colourClass, unit) {
   let dots = '';
 
   values.forEach((v, i) => {
+    if (v === null || !Number.isFinite(v)) return;
+    const startsSegment = i === 0 || values[i - 1] === null || !Number.isFinite(values[i - 1]);
+    const endsSegment = i === values.length - 1 || values[i + 1] === null || !Number.isFinite(values[i + 1]);
     const x = xFor(i);
     const y = yFor(v);
 
-    line += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
+    line += (startsSegment ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
 
-    if (i === 0) {
+    if (startsSegment) {
       area += 'M' + x.toFixed(1) + ' ' + (h - bottomPad).toFixed(1) + ' ';
       area += 'L' + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
     } else {
       area += 'L' + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
     }
 
-    if (i === values.length - 1) {
+    if (endsSegment) {
       area += 'L' + x.toFixed(1) + ' ' + (h - bottomPad).toFixed(1) + ' Z';
     }
 
@@ -2847,7 +2898,7 @@ function drawMiniChart(id, values, labels, colourClass, unit) {
   const yMid = yFor(mid);
   const yMin = yFor(min);
 
-  const lastX = xFor(values.length - 1);
+  const lastX = xFor(lastIndex);
   const lastY = yFor(last);
 
   let timeMarkers = '';
@@ -2973,6 +3024,9 @@ function updateConditionBanner(d) {
 }
 
 async function loadHistory() {
+  setText('rainAvg', '--');
+  setText('rainMax', '--');
+  document.getElementById('chart_rain').innerHTML = '<div class="chart-label">No rain history in this range</div>';
   try {
     const res = await fetch('/history?range=' + currentRange);
     const h = await res.json();
@@ -2986,6 +3040,9 @@ async function loadHistory() {
     }
 
     setText('samples', h.rows);
+    setText('rainAvg', h.rain_avg == null ? '--' : h.rain_avg.toFixed(1) + '%');
+    setText('rainMax', h.rain_max == null ? '--' : h.rain_max.toFixed(0) + '%');
+    drawMiniChart('chart_rain', h.chart_rain, h.chart_labels, '', '%');
     setText('rangeLabel', h.range);
     setText('chartPoints', h.chart_temp ? h.chart_temp.length : 0);
 
@@ -3067,6 +3124,7 @@ async function loadHistory() {
 loadLive();
 loadHistory();
 setInterval(loadLive, 2000);
+setInterval(loadHistory, 60000);
 </script>
 </body>
 </html>
@@ -3133,7 +3191,8 @@ void handleData() {
   json += "\"status_ina_solar\":\"" + sensorStatus(lastSeenINASolar) + "\",";
   json += "\"status_wind_speed\":\"" + sensorStatus(lastSeenWindSpeed) + "\",";
   json += "\"status_wind_dir\":\"" + sensorStatus(lastSeenWindDirection) + "\",";
-  json += "\"status_sd\":\"" + String(sdOK ? sensorStatus(lastSeenSD) : "offline") + "\",";
+  json += "\"status_sd\":\"" + sdLoggingStatus() + "\",";
+  json += "\"sd_detail\":\"" + sdLogError + "\",";
 
   json += "\"uptime\":\"" + latestUptime + "\",";
   json += "\"free_heap\":" + String(latestFreeHeap) + ",";
@@ -3198,7 +3257,16 @@ void handleClearLog() {
   }
 
   writeCSVHeader(file);
+  file.flush();
+  bool headerOK = !file.getWriteError() && file.size() > 0;
   file.close();
+
+  sdLogReady = headerOK;
+  sdLogError = headerOK ? "" : "Could not write CSV header";
+  if (!headerOK) {
+    server.send(500, "application/json", "{\"ok\":false,\"message\":\"Could not write CSV header\"}");
+    return;
+  }
 
   lastSeenSD = millis();
 
@@ -3344,12 +3412,27 @@ void updateWeatherData() {
   readRainSensor();
 
   // BME280
+  if (!bmeOK && millis() - lastBMEAttempt >= DEVICE_RETRY_INTERVAL) {
+    setupBME280();
+  }
   if (bmeOK) {
-    latestTemperature = bme.readTemperature() + TEMP_CALIBRATION_OFFSET;
-    latestHumidity = bme.readHumidity();
-    latestPressure = bme.readPressure() / 100.0F;
-    latestBmeOK = true;
-    lastSeenBME280 = millis();
+    Wire.beginTransmission(bmeAddress);
+    bool responding = Wire.endTransmission() == 0;
+    float temperature = responding ? bme.readTemperature() : NAN;
+    float humidity = responding ? bme.readHumidity() : NAN;
+    float pressure = responding ? bme.readPressure() / 100.0F : NAN;
+    latestBmeOK = isfinite(temperature) && isfinite(humidity) &&
+                  isfinite(pressure) && pressure > 0;
+    if (latestBmeOK) {
+      latestTemperature = temperature + TEMP_CALIBRATION_OFFSET;
+      latestHumidity = humidity;
+      latestPressure = pressure;
+      lastSeenBME280 = millis();
+    } else {
+      bmeOK = false;
+      lastBMEAttempt = millis();
+      Serial.println("BME280 read failed; retrying initialization in 30 seconds.");
+    }
   } else {
     latestBmeOK = false;
   }
@@ -3522,6 +3605,14 @@ unsigned long sensorAgeSeconds(unsigned long lastSeen) {
   return (millis() - lastSeen) / 1000;
 }
 
+String sdLoggingStatus() {
+  if (!sdOK) return "offline";
+  if (!sdLogReady) return "log blocked";
+  if (sdLogError.length()) return "write error";
+  // SD writes happen once per minute, unlike the two-second sensor reads.
+  return millis() - lastSeenSD <= SD_LOG_INTERVAL + SENSOR_STALE_TIME ? "ok" : "stale";
+}
+
 void writeCSVHeader(File &file) {
   file.println(
     "timestamp,"
@@ -3548,11 +3639,94 @@ void writeCSVHeader(File &file) {
     "wind_degrees,"
     "wifi_rssi,"
     "wifi_percent,"
-    "heltec_power"
+    "heltec_power,"
+    "rain_raw,"
+    "rain_percent,"
+    "rain_status"
   );
 }
 
+// Upgrade the old 25-column log without discarding its history. Keep the
+// original as a backup; publish the replacement only after a complete copy.
+bool prepareWeatherLog() {
+  String backup = "/weather-before-rain.csv";
+  const char* temporary = "/weather-rain.tmp";
+  sdLogError = "Could not read or recover weather.csv";
+  if (!SD.exists("/weather.csv") && SD.exists(backup)) {
+    // After the original was renamed, the temporary copy is complete. Prefer
+    // it even when an earlier migration already used the base backup name.
+    if (SD.exists(temporary)) {
+      if (!SD.rename(temporary, "/weather.csv")) return false;
+    } else if (!SD.rename(backup, "/weather.csv")) {
+      return false;
+    }
+  }
+  if (!SD.exists("/weather.csv")) return true;
+
+  File source = SD.open("/weather.csv", FILE_READ);
+  if (!source) return false;
+  String header = source.readStringUntil('\n');
+  header.trim();
+  if (getCSVField(header, 25) == "rain_raw" &&
+      getCSVField(header, 26) == "rain_percent" &&
+      getCSVField(header, 27) == "rain_status") {
+    source.close();
+    return true;
+  }
+  if (getCSVField(header, 24) != "heltec_power" ||
+      getCSVField(header, 25).length()) {
+    sdLogError = "Unrecognized CSV header; original log preserved";
+    source.close();
+    return false;
+  }
+  // Preserve earlier backups rather than blocking an otherwise valid upgrade.
+  for (int i = 1; SD.exists(backup) && i <= 99; i++) {
+    backup = "/weather-before-rain-" + String(i) + ".csv";
+  }
+  if (SD.exists(backup)) {
+    sdLogError = "No free rain backup filename";
+    source.close();
+    return false;
+  }
+  sdLogError = "Could not create rain log copy; check SD free space and writes";
+  // A temporary file may remain after an interrupted copy; the source is intact.
+  if (SD.exists(temporary) && !SD.remove(temporary)) {
+    source.close();
+    return false;
+  }
+  File target = SD.open(temporary, FILE_WRITE);
+  if (!target) {
+    source.close();
+    return false;
+  }
+  String newHeader = header + ",rain_raw,rain_percent,rain_status\n";
+  bool copied = target.print(newHeader) == newHeader.length();
+  while (copied && source.available()) {
+    String row = source.readStringUntil('\n');
+    row.trim();
+    if (!row.length()) continue;
+    row += ",,,\n"; // Missing historical rain values are unknown, not zero.
+    copied = target.print(row) == row.length();
+    delay(1);
+  }
+  target.flush();
+  copied = copied && !target.getWriteError();
+  target.close();
+  source.close();
+  if (!copied) return false;
+  sdLogError = "Could not rename rain log files; original log preserved";
+  if (!SD.rename("/weather.csv", backup)) return false;
+  if (!SD.rename(temporary, "/weather.csv")) {
+    SD.rename(backup, "/weather.csv");
+    return false;
+  }
+  Serial.println("Rain log columns added; original saved as " + backup);
+  return true;
+}
+
 void setupSDCard() {
+  lastSDMountAttempt = millis();
+  sdLogReady = false;
   Serial.println();
   Serial.println("Starting SD card...");
 
@@ -3560,6 +3734,8 @@ void setupSDCard() {
 
   if (!SD.begin(SD_CS, SPI)) {
     sdOK = false;
+    sdLogError = "SD mount failed; check card, power and SPI wiring";
+    SD.end();
     Serial.println("SD card mount FAILED.");
     return;
   }
@@ -3569,17 +3745,34 @@ void setupSDCard() {
 
   Serial.println("SD card mounted OK.");
 
+  if (!prepareWeatherLog()) {
+    Serial.println("SD mounted, but logging blocked: " + sdLogError);
+    return;
+  }
+
   if (!SD.exists("/weather.csv")) {
     File file = SD.open("/weather.csv", FILE_WRITE);
 
     if (file) {
       writeCSVHeader(file);
+      file.flush();
+      bool headerOK = !file.getWriteError() && file.size() > 0;
       file.close();
+      if (!headerOK) {
+        sdLogError = "Could not write CSV header";
+        Serial.println(sdLogError);
+        return;
+      }
       Serial.println("Created /weather.csv with header.");
     } else {
+      sdLogError = "Could not create weather.csv";
       Serial.println("Could not create /weather.csv.");
+      return;
     }
   }
+  sdLogReady = true;
+  sdLogError = "";
+  lastSeenSD = millis();
 }
 
 String getTimestamp() {
@@ -3595,7 +3788,7 @@ String getTimestamp() {
 }
 
 void logWeatherToSD() {
-  if (!sdOK) {
+  if (!sdOK || !sdLogReady) {
     return;
   }
 
@@ -3603,7 +3796,7 @@ void logWeatherToSD() {
 
   if (!file) {
     Serial.println("SD log failed: could not open /weather.csv");
-    sdOK = false;
+    sdLogError = "Could not open weather.csv; retrying next log interval";
     return;
   }
 
@@ -3665,10 +3858,25 @@ void logWeatherToSD() {
   file.print(latestWiFiPercent);
   file.print(",");
 
-  file.println(heltecPowerOn ? "on" : "off");
+  file.print(heltecPowerOn ? "on" : "off");
+  file.print(",");
+  file.print(latestRainRaw);
+  file.print(",");
+  file.print(latestRainPercent);
+  file.print(",");
+  file.println(latestRainStatus);
 
+  file.flush();
+  bool writeOK = !file.getWriteError();
   file.close();
 
+  if (!writeOK) {
+    sdLogError = "SD write failed; check free space and card connection";
+    Serial.println(sdLogError);
+    return;
+  }
+
+  sdLogError = "";
   lastSeenSD = millis();
   Serial.println("Logged weather data to SD.");
 }
@@ -3924,6 +4132,9 @@ void loop() {
   server.handleClient();
   ArduinoOTA.handle();
   maintainWiFi();
+  if (!sdOK && millis() - lastSDMountAttempt >= DEVICE_RETRY_INTERVAL) {
+    setupSDCard();
+  }
 
   if (rebootRequested && millis() - rebootRequestedAt >= REBOOT_DELAY_MS) {
   Serial.println("Rebooting now...");
@@ -4029,7 +4240,7 @@ void loop() {
     Serial.print(" WindDir=");
     Serial.print(sensorStatus(lastSeenWindDirection));
     Serial.print(" SD=");
-    Serial.println(sdOK ? sensorStatus(lastSeenSD) : "offline");
+    Serial.println(sdLoggingStatus());
 
     Serial.print("Uptime:      ");
     Serial.print(latestUptime);
